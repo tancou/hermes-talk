@@ -31,6 +31,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+try:
+    from . import talk_config
+except ImportError:  # pragma: no cover - standalone flat-module installation
+    import talk_config
+
 REALTIME_AUTH_REQUIRED_MESSAGE = (
     "Realtime voice needs a credential: set TALK_OPENAI_API_KEY or "
     "OPENAI_API_KEY, or sign in with `codex login` to use your ChatGPT "
@@ -64,8 +69,28 @@ class TalkAuth:
     account_id: str | None = field(default=None, repr=False)
 
 
+def _auth_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
+    if env is not None:
+        return env
+    return {
+        key: value
+        for key in ("TALK_PREFER_CODEX_OAUTH", "TALK_OPENAI_API_KEY", "OPENAI_API_KEY")
+        if (value := talk_config._talk_env_get(key)) is not None
+    }
+
+
+def _vendor_login_allowed() -> bool:
+    # A routed profile must use its own host login, never the process owner's
+    # external Codex file after a missing or failed profile login.
+    try:
+        from agent.secret_scope import serves_routed_profile
+    except ImportError:
+        return True
+    return not serves_routed_profile()
+
+
 def _read_env(env: Mapping[str, str] | None, key: str) -> str | None:
-    source = os.environ if env is None else env
+    source = _auth_env(env)
     raw = source.get(key)
     if raw is None:
         return None
@@ -81,7 +106,7 @@ def prefer_codex_oauth(env: Mapping[str, str] | None = None) -> bool:
     at a billing boundary and therefore fails closed.
     """
 
-    source = os.environ if env is None else env
+    source = _auth_env(env)
     if "TALK_PREFER_CODEX_OAUTH" not in source:
         return False
     raw = str(source.get("TALK_PREFER_CODEX_OAUTH") or "").strip().lower()
@@ -272,6 +297,8 @@ def _resolve_codex_oauth(codex_home: Path | None = None) -> TalkAuth | None:
     hermes_auth = _resolve_hermes_codex_oauth()
     if hermes_auth is not None:
         return hermes_auth
+    if not _vendor_login_allowed():
+        return None
     # Fallback: the Codex CLI's own store, READ-ONLY. Talk never refreshes or rewrites
     # ``~/.codex/auth.json`` — that file belongs to the Codex CLI. An expired token is
     # reported so the user re-logins with the vendor CLI (or logs Hermes in).
@@ -331,7 +358,7 @@ def resolve_auth(
     silently falling through to another source.
     """
 
-    source = os.environ if env is None else env
+    source = _auth_env(env)
     if prefer_codex_oauth(source):
         oauth = _resolve_codex_oauth(codex_home)
         if oauth is not None:
@@ -391,7 +418,7 @@ def auth_diagnostic(
     for ``hermes talk doctor``.
     """
 
-    source = os.environ if env is None else env
+    source = _auth_env(env)
     now = time.time() if now_s is None else now_s
     preference, preferred = _preference_receipt(source)
 
@@ -406,6 +433,8 @@ def auth_diagnostic(
     metered_key_present = "present" in {scoped_state, shared_state}
 
     oauth_state = _hermes_codex_oauth_state(now)
+    if oauth_state is None and not _vendor_login_allowed():
+        oauth_state = "missing"
     if oauth_state is None:
         auth_path = _codex_auth_path(codex_home)
         oauth_state = "missing"
