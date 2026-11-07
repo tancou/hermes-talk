@@ -27,6 +27,10 @@ named rather than smoothed.
   alongside bare lists and named envelopes. Named lists keep precedence,
   non-object entries are filtered, and invalid response shapes still fail.
   Contributed by @tancou.
+- Discord playback pads the last partial frame when native provider output ends,
+  preserving response boundaries even with a full queue so queued announcements
+  can resume after playback drains. Canonical native and Live output also signal
+  completion; interrupted audio is discarded. Thanks to @tancou.
 - Live replay tests use a controlled authentication-lease clock and wait for the
   durable delivery receipt, preventing slow Windows CI runners from expiring an
   unrefreshed test lease or racing receipt persistence. Production timeouts and
