@@ -36,6 +36,9 @@ named rather than smoothed.
   handoffs use the same typed outcome instead of interpreting answer text;
   lost tracking reports an unknown remote outcome. Remote terminal statuses
   survive long reasons and bounded spoken reports. Contributed by @tancou.
+- Delegation and admission tests release their gates and join owned workers
+  before resetting run IDs or removing mocks. Deterministic neighboring-test
+  regressions cover stale completion, mock teardown, and failed-test cleanup.
 - Background host/run workers, transcript handoffs, approval workers and SSE
   readers, approval timeout timers, and API/catalog refreshes retain the caller's
   context variables at dispatch. Each worker and timer gets its own context;
