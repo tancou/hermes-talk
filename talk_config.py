@@ -937,7 +937,7 @@ def agent_timeout_s() -> int:
 def _positive_float(name: str, default: float) -> float:
     """A positive float knob. Junk and non-positive values take the default."""
 
-    raw = (os.environ.get(name) or "").strip()
+    raw = (_talk_env_get(name) or "").strip()
     if raw:
         try:
             parsed = float(raw)

@@ -236,6 +236,12 @@ def _resolve_discord_adapter_for_profile(runner, profile_name: str | None) -> An
     # from "unknown profile / no map available" so we can produce the right error.
     profile_has_explicit_map: bool = False
 
+    host_resolver = getattr(runner, "_adapters_for_profile", None)
+    if callable(host_resolver):
+        # The host also recognizes explicitly routed shared-bot satellites.
+        # Its empty verdict is authoritative; never fall back after a denial.
+        return _find_in_map(host_resolver(profile_name) or {})
+
     profile_adapters = getattr(runner, "_profile_adapters", None)
 
     # 1. Trivial cases: no profile name, or the canonical default name.
