@@ -109,6 +109,21 @@ VOICE_PREAMBLE = (
     "report a result you have not actually been given."
 )
 
+CANONICAL_VOICE_PREAMBLE = (
+    "You are Hermes, speaking live with the operator. Reply naturally and concisely, without "
+    "markdown or reading raw tool output aloud. " + ANTI_GUESS_RULE
+    + "Use the advertised canonical Hermes tools directly. Discover capabilities using the "
+    "advertised search/describe tools when present. Never invent an unavailable tool. "
+    "The host executes your exact calls through its normal session, skill, tool and approval "
+    "pipeline; no second model reinterprets your request. Follow the operator's authorization "
+    "and the host's approval decisions. If approval is pending, direct the operator to the "
+    "linked Discord text conversation; do not claim a spoken yes overrides a host denial. "
+    "Use tools to verify results. Child agents receive only the task and context you supply. "
+    "Audio can be interrupted while a tool is running; interruption does not undo that tool. "
+    "Finalized input, tool calls, results and your completed reply are recorded in the linked "
+    "Hermes conversation. An interrupted response is not proof that the operator heard it."
+)
+
 _TOOLS_MARKER = "Advertised legacy tools:"
 _HOST_TOOLS_MARKER = "Canonical Hermes host tools:"
 _TRANSCRIPT_CONTRACT = (
@@ -316,6 +331,7 @@ def build_instructions(
     tools: list[dict] | None = None,
     host_execution: bool = False,
     canonical_task: bool = False,
+    canonical_history: bool = False,
     lane: str | None = None,
     host_summary: str | None = None,
     capabilities: str | None = None,
@@ -387,10 +403,13 @@ def build_instructions(
             " " + _CORE_JOIN_POINTER if core_join else ""
         )
     contracts = [_tool_contract(tools, host_execution=host_execution), transcript_contract]
+    if canonical_history:
+        contracts = [_tool_contract(tools, host_execution=True)]
     language_line = reply_language_line(reply_language)
     if language_line:
         contracts.insert(0, language_line)
-    return VOICE_PREAMBLE + "\n\n" + "\n\n".join([*contracts, *sections])
+    preamble = CANONICAL_VOICE_PREAMBLE if canonical_history else VOICE_PREAMBLE
+    return preamble + "\n\n" + "\n\n".join([*contracts, *sections])
 
 
 __all__ = [

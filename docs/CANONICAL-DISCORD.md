@@ -1,62 +1,80 @@
-# Canonical Discord voice through Hermes
+# Canonical Discord voice with Realtime duplex
 
-This branch integrates with Hermes's optional continuous transcription API.
-It does not require the proposed `agent.realtime_voice_provider` API v2.
+On a compatible Hermes host, `/talk join` now selects native Realtime audio with
+canonical Hermes tool execution. `/talk core join` explicitly selects this path.
+First connect the bot with `/voice join` in the linked text channel. `/talk status`
+reports **Realtime duplex voice with canonical Hermes tools** and the speaker policy.
+Startup refusal never silently downgrades to the legacy executor.
 
-After joining the bot to your voice channel with `/voice join`, run `/talk join`
-in the linked text channel. On a compatible host this selects canonical voice;
-`/talk core join` selects it explicitly. `/talk legacy join` keeps the old
-provider-owned conversation available. Old hosts retain their old `/talk join`
-behavior. Canonical startup never silently falls back to legacy after a refusal.
+OpenAI Realtime (including the existing Codex OAuth authentication) owns listening,
+spoken responses and speech interruption. `TALK_MODEL` and `TALK_VOICE` select that
+model and voice; use `TALK_VOICE_MODE=native` for native audio. Its exact tool calls
+enter the host's ordinary Discord admission, agent loop, tool authorization and
+approval pipeline. No second model reinterprets the spoken request. A child agent
+uses the profile's normal model. Native TTS acknowledgements are suppressed while
+Realtime owns the audio. Audio continues and barge-in cancels/truncates playback
+while a host tool is pending; this does not undo or automatically cancel that tool.
 
-Talk streams OpenAI realtime transcription using the existing Talk authentication
-and model configuration, with automatic assistant output and tools disabled.
-Hermes runs the actual agent turn and speaks with its configured TTS. Consequently
-`TALK_VOICE` does not select the final spoken voice in this mode. The agent model,
-tools, memory and session are the host's normal Discord ones. This first provider
-uses OpenAI; it does not select Gemini/Grok from `TALK_PROVIDER`.
+The host exposes its enabled tools, skills and MCP tools through the existing
+canonical discovery surface. Its initial context includes up to 20 recent text
+messages (16,000 characters) from the linked Hermes conversation, preserving roles.
+Final input, tool calls/results and the final spoken response are recorded together
+as a native turn. Input attribution uses immutable Discord IDs and the exact VAD
+input item, including when transcription arrives after the first response. Tools
+wait up to 30 seconds for that final transcript. Missing attribution or transcription
+refuses execution. Mixed-speaker intervals cannot authorize tools.
 
-Use `/talk status` to see readiness, pause state and speaker policy. `/talk pause`
-and `/talk resume` control capture, and `/talk leave` closes the STT sockets and
-restores the capture bridge. These controls must come from the linked text channel.
-Pause is microphone-only: accepted agent work and playback can continue.
+The first implementation requires a host agent using the `chat_completions` protocol
+(e.g. the configured OpenRouter devops profile); it refuses other host protocols.
+This restriction concerns the host executor, not Realtime audio authentication.
+Replay is bounded context, not live synchronization of concurrent text edits.
 
-For a restricted room where all authorized participants may issue requests, set
-this in the **owning Hermes profile**, then leave/rejoin Talk:
+## Profile configuration
 
 ```yaml
 discord:
-  voice_operator_only: false
+  voice_engine: realtime
+  voice_operator_only: true
 ```
 
-The default `true` admits only the person who started Talk. With `false`, current
-human room members who pass Hermes's Discord access rules are admitted under their
-own identities, with one STT stream per speaker (and potentially more provider
-usage). Neither mode bypasses normal tool approvals or profile isolation.
-`TALK_DISCORD_OPERATOR_USER_IDS` governs the separate legacy tool executor, not
-this native path. Doctor reports `continuous_stt_available` independently from the
-optional speculative realtime API; warnings about that older API do not establish
-whether this canonical ingress is available. `/talk status` reports the live path.
+Set these through Hermes configuration, for example:
 
-## Joint acceptance before deployment
+```sh
+hermes -p devops config set discord.voice_engine realtime
+hermes -p devops config set discord.voice_operator_only false
+```
 
-1. In a dedicated Discord test room, join voice and start `/talk core join`.
-   Check status changes from starting to listening and states the expected policy.
-2. Ask for information given earlier in the linked text conversation, then request
-   a harmless tool operation. Check the existing session's tool trace and history.
-3. Exercise an operation that normally requests approval; verify its usual prompt
-   and refusal behavior. Check memory and an MCP tool if enabled in this profile.
-4. Speak two successive requests; check each final transcript is admitted once,
-   replies are audible, and normal busy/steering behavior is preserved.
-5. Pause, speak, resume, then leave. Confirm pause drops input, leave stops capture,
-   and ordinary Hermes voice playback/input still works afterward.
-6. With strict policy, another member's speech must not enter a turn. With relaxed
-   policy, another authorized member must keep their own user ID. An unauthorized
-   member, unresolved audio, another text channel or another guild stays refused.
-7. Rebind the linked text channel or reconnect Discord mid-transcription. The
-   attachment must end rather than replaying the old speech into the new binding.
-8. Repeat from another Hermes profile and verify its model, tools and conversation.
+`voice_operator_only: false` admits other currently authorized human members of the
+same room, under their own Discord identities. `true` admits only the initiating
+operator. Leave/rejoin after changing it. The switch relaxes room-speaker selection;
+Discord access rules, profile isolation and normal tool approvals remain active.
+`TALK_DISCORD_OPERATOR_USER_IDS` governs the separate legacy executor. Canonical
+mode replaces the legacy fixed tool allowlist with the host's actual tool policy.
+Approval prompts use the linked text conversation; a spoken yes does not resolve
+a pending native approval unless the host explicitly provides that mechanism.
 
-This implementation does not promise provider-native duplex latency or immediate
-speech-start interruption of tools. It uses the existing native Hermes turn and
-TTS behavior. Offline tests do not replace these microphone/provider checks.
+`/talk pause`, `/talk resume` and `/talk leave` control the session from its linked
+text channel. Pause affects microphone capture, not already admitted tool work.
+`/talk transcribe join` selects continuous STT → native agent → configured TTS.
+`discord.voice_engine: transcription` makes that path the default for `/talk join`.
+`/talk legacy join` explicitly selects the old provider-owned tool executor.
+Older hosts retain their available behavior. Doctor's older optional realtime API-v2
+warnings do not describe this new invocation-bound attachment; inspect live status.
+
+## Acceptance checks
+
+1. Start on the intended profile; verify status names Realtime duplex/canonical tools.
+2. Ask about a recent message in the linked text conversation, then request a harmless
+   tool call. Verify one native history turn, exact result and the expected profile.
+3. Interrupt a spoken answer, including while a tool is pending. Playback must stop
+   promptly; the tool's eventual outcome must remain accurately reported.
+4. Exercise a native approval and deny it in text. Confirm the operation did not run.
+5. Test skills/MCP and a child task enabled in this profile.
+6. Test pause/resume/leave, then rejoin; confirm context and normal Discord voice recover.
+7. With strict policy, another member is ignored; with relaxed policy, an authorized
+   member works under their own identity. Unknown/mixed speakers stay refused.
+8. Reconnect/rebind Discord; the old attachment must stop, never target a new room.
+
+Offline tests cover real gateway admission, tool execution, persistence and replay,
+late input, speaker provenance, expired/reused permits, and duplex interruption
+while tools wait. They do not replace live microphone/provider acceptance.

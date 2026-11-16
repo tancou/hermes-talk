@@ -240,6 +240,7 @@ def test_fake_provider_ordinary_turn_preserves_audio_and_transcript_provenance()
 def test_host_attachment_tools_execute_as_one_batch_without_blocking_audio():
     attachment = HostExecutionAttachment(block=True)
     audio = Audio()
+    audio.played_ms = 75
     fake = FakeProviderSession(
         [
             rt.ResponseStarted(response_id="response-1"),
@@ -258,7 +259,10 @@ def test_host_attachment_tools_execute_as_one_batch_without_blocking_audio():
                 arguments='{"value":2}',
             ),
             rt.ResponseFinished(response_id="response-1"),
+            rt.ResponseStarted(response_id="response-during-tool"),
             rt.OutputAudio(data=b"audio-while-host-awaits", item_id="audio-1"),
+            rt.SpeechStarted(input_id="interrupting-input", offset_ms=0),
+            rt.ResponseFinished(response_id="response-during-tool"),
         ]
     )
 
@@ -272,10 +276,14 @@ def test_host_attachment_tools_execute_as_one_batch_without_blocking_audio():
         )
         await asyncio.wait_for(attachment.started.wait(), 0.2)
         for _ in range(20):
-            if audio.playback:
+            if audio.drains:
                 break
             await asyncio.sleep(0)
         assert audio.playback == [b"audio-while-host-awaits"]
+        assert audio.drains == 1
+        assert any(isinstance(c, rt.CancelResponse) for batch in fake.sent for c in batch)
+        assert any(isinstance(c, rt.TruncateOutput) and c.audio_end_ms == 75
+                   for batch in fake.sent for c in batch)
         assert not running.done()
         attachment.release.set()
         return await asyncio.wait_for(running, 0.5)

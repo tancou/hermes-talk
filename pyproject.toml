@@ -41,6 +41,7 @@ build-backend = "setuptools.build_meta"
 packages = ["talk_phone"]
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 py-modules = [
+  "talk_host_duplex",
   "talk_continuous_stt",
   "talk_config",
   "talk_live_audio",

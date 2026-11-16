@@ -24,7 +24,7 @@ import secrets
 import threading
 import time
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 try:
@@ -197,6 +197,7 @@ class SpeakerBinding:
     #: or tainted binding carries None, so no permit can exist without a real
     #: approval moment behind it.
     authorized_at: float | None = None
+    input_item_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,11 +353,13 @@ class DiscordToolAuthorizationLedger:
         max_seen_response_ids: int = _DEFAULT_MAX_SEEN_RESPONSE_IDS,
         max_seen_call_ids: int = _DEFAULT_MAX_SEEN_CALL_IDS,
         echoes_response_metadata: bool = True,
+        canonical_speaker_allowed=None,
     ) -> None:
         # False for a provider whose response.created never returns the
         # metadata we sent (xAI Grok). Such a lane binds by order instead:
         # see note_response_created.
         self._echoes_response_metadata = bool(echoes_response_metadata)
+        self._canonical_speaker_allowed = canonical_speaker_allowed
         self._max_segments = max(1, int(max_segments))
         self._max_responses = max(1, int(max_responses))
         self._max_seen_item_ids = max(1, int(max_seen_item_ids))
@@ -367,6 +370,7 @@ class DiscordToolAuthorizationLedger:
         self._sample_cursor = 0
         self._speech_starts: OrderedDict[str, int] = OrderedDict()
         self._items: OrderedDict[str, SpeakerBinding] = OrderedDict()
+        self._committed_inputs: OrderedDict[str, SpeakerBinding] = OrderedDict()
         self._item_phases: OrderedDict[str, str] = OrderedDict()
         self._tainted_items: set[str] = set()
         self._bindings: OrderedDict[str, _ExpectedResponse] = OrderedDict()
@@ -454,8 +458,10 @@ class DiscordToolAuthorizationLedger:
         user_id: int | None,
         reason: str,
         authorized_at: float | None = None,
+        input_item_id: str | None = None,
     ) -> SpeakerBinding:
-        return SpeakerBinding(secrets.token_urlsafe(18), user_id, reason, authorized_at)
+        return SpeakerBinding(secrets.token_urlsafe(18), user_id, reason,
+                              authorized_at, input_item_id)
 
     def _reserve_item(self, item_id: str, phase: str) -> bool:
         """Reserve one VAD item ID without ever reopening a replay tombstone."""
@@ -574,7 +580,8 @@ class DiscordToolAuthorizationLedger:
                 return
             self._item_phases[item_id] = "stopped"
             start_ms = self._speech_starts.pop(item_id, None)
-            binding = self._binding_for_interval(start_ms, event.get("audio_end_ms"))
+            binding = replace(self._binding_for_interval(start_ms, event.get("audio_end_ms")),
+                              input_item_id=item_id)
             self._items[item_id] = binding
             while len(self._items) > self._max_responses:
                 self._items.popitem(last=False)
@@ -658,6 +665,9 @@ class DiscordToolAuthorizationLedger:
             binding = self._items.pop(item_id, None)
             if binding is None:
                 binding = self._new_binding(None, "missing VAD item attribution")
+            self._committed_inputs[item_id] = binding
+            while len(self._committed_inputs) > self._max_responses:
+                self._committed_inputs.popitem(last=False)
             self._expect_binding(binding)
             return self._response_create(binding)
 
@@ -772,7 +782,8 @@ class DiscordToolAuthorizationLedger:
                 # no permit; the binding's own reason already names why.
                 authorized_at = authority.binding.authorized_at
                 if authorized_at is not None:
-                    if target is not None and not self._target_was_spoken(target):
+                    if (self._canonical_speaker_allowed is None
+                            and target is not None and not self._target_was_spoken(target)):
                         # The operator can only have approved what the
                         # exchange actually said. An emitted target that was
                         # never spoken is the summary-vs-emitted divergence
@@ -805,6 +816,7 @@ class DiscordToolAuthorizationLedger:
                         # A continuation extends the same spoken approval; it
                         # must not restart the approval clock.
                         authorized_at=authority.binding.authorized_at,
+                        input_item_id=authority.binding.input_item_id,
                     )
                     self._expect_binding(authority.continuation, authority.chain)
                 if not self._poisoned:
@@ -856,6 +868,12 @@ class DiscordToolAuthorizationLedger:
             # configuration.
             if isinstance(permit, _CallPermit):
                 permit.consumed = True
+        if self._canonical_speaker_allowed is not None:
+            if (trusted and binding.user_id is not None
+                    and self._canonical_speaker_allowed(binding.user_id)):
+                return None
+            return ("The canonical host could not authenticate this tool call's speaker; "
+                    "no tool was run.")
         if name in READ_ONLY_TALK_TOOLS:
             return None
         if name in MUTATING_TALK_TOOLS:
@@ -903,6 +921,20 @@ class DiscordToolAuthorizationLedger:
         _log.warning("denied Discord state-changing voice tool %s: %s", name, reason)
         return denial_template.format(tool=name)
 
+    def input_speaker(self, item_id):
+        with self._lock:
+            if self._poisoned or item_id in self._tainted_items:
+                return None
+            binding = self._items.get(item_id) or self._committed_inputs.get(item_id)
+            return binding.user_id if binding is not None else None
+
+    def response_speaker(self, response_id):
+        with self._lock:
+            authority = self._responses.get(response_id)
+            if authority is None or authority.tainted or authority.chain.tainted:
+                return None
+            return authority.binding.user_id
+
     def complete_response(self, response_id: Any, *, continued: bool) -> None:
         """Release completed response state, retaining a continued chain token."""
 
@@ -925,6 +957,7 @@ class DiscordToolAuthorizationLedger:
             self._segments.clear()
             self._speech_starts.clear()
             self._items.clear()
+            self._committed_inputs.clear()
             self._item_phases.clear()
             self._tainted_items.clear()
             self._bindings.clear()

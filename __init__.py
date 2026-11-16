@@ -246,7 +246,8 @@ def _talk_command(raw_args: str = "", invocation=None) -> str:
         return _canonical_discord_command(raw, invocation)
 
     with talk_discord._SESSION_LOCK:
-        continuous_core = talk_discord._SESSION.get("continuous_core", False)
+        continuous_core = (talk_discord._SESSION.get("continuous_core", False)
+                           or talk_discord._SESSION.get("canonical_duplex", False))
         core_guild_id = talk_discord._SESSION.get("guild_id")
     if continuous_core and sub in {
         "leave", "stop", "hang up", "status", "pause", "mute", "resume", "unmute",
@@ -269,7 +270,11 @@ def _talk_command(raw_args: str = "", invocation=None) -> str:
         return talk_discord.pause_session()
     if sub in {"resume", "unmute"}:
         return talk_discord.resume_session()
-    if sub == "core join" or (
+    if (getattr(invocation, "realtime_execution_version", None) == 1
+            and (sub == "core join" or (sub in {"", "join"}
+                 and getattr(invocation, "realtime_voice_default", False)))):
+        return _start_canonical_duplex(invocation)
+    if sub in {"core join", "transcribe join"} or (
         sub in {"", "join"} and getattr(invocation, "transcription_ingress_version", None) == 1
     ):
         capture = getattr(invocation, "capture_realtime_voice_attachment_factory", None)
@@ -291,7 +296,9 @@ def _talk_command(raw_args: str = "", invocation=None) -> str:
                 and not talk_core_realtime.core_provider_available()):
             return "Canonical core voice is unsupported by this Hermes host."
         return talk_discord.start_core_session(factory)
-    if sub in {"", "join", "legacy join"}:
+    if sub == "legacy join":
+        return talk_discord.start_session()
+    if sub in {"", "join"}:
         capture = getattr(invocation, "capture_realtime_execution_attachment", None)
         if callable(capture):
             try:
@@ -301,6 +308,28 @@ def _talk_command(raw_args: str = "", invocation=None) -> str:
             return talk_discord.start_session(host_execution_attachment=attachment)
         return talk_discord.start_session()
     return talk_discord.JOIN_USAGE
+
+
+async def _start_canonical_duplex(invocation):
+    try:
+        attachment = await invocation.capture_realtime_execution_attachment()
+    except Exception as exc:  # noqa: BLE001 - redact host refusal
+        return f"Canonical duplex voice was refused by the host ({type(exc).__name__})."
+    try:
+        result = talk_discord.start_session(host_execution_attachment=attachment)
+        with talk_discord._SESSION_LOCK:
+            started = talk_discord._SESSION.get("mode") == "provider-host-tools"
+            if started:
+                talk_discord._SESSION["canonical_duplex"] = True
+                talk_discord._SESSION["speaker_policy"] = (
+                    "operator only" if attachment.factory.operator_only
+                    else "authorized room members")
+        if not started:
+            attachment.close()
+        return result
+    except BaseException:
+        attachment.close()
+        raise
 
 
 

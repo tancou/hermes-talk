@@ -115,6 +115,12 @@ def encode_command(command: rt.RealtimeCommand) -> dict[str, Any]:
             "type": "input_audio_buffer.append",
             "audio": base64.b64encode(command.data).decode("ascii"),
         }
+    if isinstance(command, rt.ReplayConversationMessage):
+        content_type = "input_text" if command.role == rt.TranscriptRole.USER else "output_text"
+        return {"type": "conversation.item.create", "item": {
+            "id": command.item_id, "type": "message", "role": command.role.value,
+            "content": [{"type": content_type,
+                         "text": command.text}]}}
     if isinstance(command, (rt.AddContext, rt.AddInputText)):
         return {
             "type": "conversation.item.create",
