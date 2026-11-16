@@ -833,6 +833,10 @@ token, or writes an auth store.
 
 ## Discord voice — talking in the channel Hermes is already in
 
+For hosts implementing continuous STT ingress, see
+[canonical Discord voice](CANONICAL-DISCORD.md): `/talk join` uses the native
+Hermes session, with an optional restricted-room speaker-policy switch.
+
 The following describes the legacy voice lane. Task-bound GPT-Live uses the
 [Discord commands and audience checks](GPT-LIVE.md#discord) in the Live guide.
 

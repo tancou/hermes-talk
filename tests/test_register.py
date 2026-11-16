@@ -454,6 +454,60 @@ def test_join_on_an_older_host_keeps_the_explicitly_limited_fallback(plugin, mon
     assert "limited legacy" in reply.lower()
 
 
+def test_continuous_host_defaults_to_core_without_speculative_realtime_api(plugin, monkeypatch):
+    factory = types.SimpleNamespace(transcription_ingress_version=1)
+    invocation = types.SimpleNamespace(
+        transcription_ingress_version=1,
+        capture_realtime_voice_attachment_factory=lambda: factory,
+    )
+    monkeypatch.setattr(plugin.talk_core_realtime, "core_provider_available", lambda: False)
+    calls = []
+    monkeypatch.setattr(plugin.talk_discord, "start_core_session",
+                        lambda value: calls.append(value) or "core")
+    monkeypatch.setattr(plugin.talk_discord, "start_session", lambda: "legacy")
+
+    async def run():
+        assert plugin._talk_command("join", invocation) == "core"
+        assert plugin._talk_command("core join", invocation) == "core"
+        assert plugin._talk_command("legacy join", invocation) == "legacy"
+    asyncio.run(run())
+    assert calls == [factory, factory]
+
+
+def test_continuous_core_leave_cannot_be_issued_without_authorized_invocation(plugin, monkeypatch):
+    monkeypatch.setitem(plugin.talk_discord._SESSION, "continuous_core", True)
+    monkeypatch.setitem(plugin.talk_discord._SESSION, "guild_id", 11)
+    stopped = []
+    monkeypatch.setattr(plugin.talk_discord, "stop_session", lambda: stopped.append(True) or "left")
+    authorized = []
+    invocation = types.SimpleNamespace(
+        authorize_realtime_voice_control=lambda **kw: authorized.append(kw),
+    )
+
+    async def run():
+        assert "requires" in plugin._talk_command("leave")
+        assert not stopped
+        assert plugin._talk_command("leave", invocation) == "left"
+    asyncio.run(run())
+    assert authorized == [{"guild_id": 11}]
+
+
+def test_continuous_core_never_silently_changes_the_selected_provider(plugin, monkeypatch):
+    invocation = types.SimpleNamespace(
+        transcription_ingress_version=1,
+        capture_realtime_voice_attachment_factory=lambda: types.SimpleNamespace(
+            transcription_ingress_version=1),
+    )
+    monkeypatch.setattr(plugin.talk_config, "talk_provider", lambda: "gemini")
+    called = []
+    monkeypatch.setattr(plugin.talk_discord, "start_core_session", lambda _: called.append(True))
+
+    async def run():
+        assert "requires TALK_PROVIDER=openai" in plugin._talk_command("core join", invocation)
+    asyncio.run(run())
+    assert not called
+
+
 def test_registered_command_description_labels_legacy_and_core_parity(plugin):
     ctx = StubCtx()
     plugin.register(ctx)

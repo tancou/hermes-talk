@@ -27,6 +27,7 @@ try:
         talk_grok_realtime,
         talk_host,
         talk_identity,
+        talk_providers,
         talk_tools,
     )
 except ImportError:  # pragma: no cover - flat-module fallback (pip -e install)
@@ -38,6 +39,7 @@ except ImportError:  # pragma: no cover - flat-module fallback (pip -e install)
     import talk_grok_realtime
     import talk_host
     import talk_identity
+    import talk_providers
     import talk_tools
 
 SCHEMA_VERSION = 1
@@ -145,6 +147,7 @@ def _plugin_check() -> dict[str, Any]:
         "core_realtime_contract": "api-v2-input-only",
         "core_contract_available": core_readiness["contract_available"],
         "core_provider_available": core_readiness["provider_available"],
+        "continuous_stt_available": talk_providers.OpenAITranscriptionProvider().continuous_capable,
     }
     if required_issues:
         return _check(
@@ -1091,7 +1094,7 @@ def _discord_check() -> dict[str, Any]:
         return _check(
             "discord",
             "warn",
-            "no Discord operators are configured; mutating voice tools deny everyone",
+            "no legacy Discord operators are configured; legacy mutating voice tools deny everyone",
             details,
             ("Set TALK_DISCORD_OPERATOR_USER_IDS to immutable Discord user IDs if needed.",),
         )
