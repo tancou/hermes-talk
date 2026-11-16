@@ -1690,9 +1690,11 @@ def session_status() -> str:
         talk_pause.is_paused()
     ) else ""
     if mode == "provider-host-tools":
+        with _SESSION_LOCK:
+            policy = _SESSION.get("speaker_policy", "operator only")
         return (
-            f"Provider-owned Realtime voice with canonical Hermes tools is live on server "
-            f"{guild_id}. Say `talk leave` to stop.{paused}"
+            f"Realtime duplex voice with canonical Hermes tools is live on server "
+            f"{guild_id} ({policy}). Say `talk leave` to stop.{paused}"
         )
     return (
         f"Limited legacy provider-owned voice is live on server {guild_id}. "
@@ -2116,7 +2118,7 @@ def start_session(
         return "Starting canonical task voice; say `talk status` to check or `talk leave` to stop."
     if host_execution_attachment is not None:
         return (
-            "Starting provider-owned Realtime voice with canonical Hermes tools; say "
+            "Starting Realtime duplex voice with canonical Hermes tools; say "
             "`talk status` to check or `talk leave` to stop."
         )
     return (

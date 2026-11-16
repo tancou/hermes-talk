@@ -376,6 +376,21 @@ class AddInputText(RealtimeCommand):
 
 
 @dataclass(frozen=True, slots=True)
+class ReplayConversationMessage(RealtimeCommand):
+    """Bounded historical conversation data, never a system instruction."""
+    item_id: str
+    role: TranscriptRole
+    text: str
+
+    def __post_init__(self) -> None:
+        _identifier(self.item_id, "item_id")
+        if not isinstance(self.role, TranscriptRole):
+            raise ValueError("History must retain its user or assistant role")
+        if not isinstance(self.text, str) or not 0 < len(self.text) <= 32000:
+            raise ValueError("Historical message must be bounded text")
+
+
+@dataclass(frozen=True, slots=True)
 class AddContext(RealtimeCommand):
     item_id: str
     text: str
@@ -522,6 +537,7 @@ __all__ = [
     "RealtimeTurnDetection",
     "RealtimeTurnDetectionMode",
     "RemoveContext",
+    "ReplayConversationMessage",
     "ResponseFinished",
     "ResponseStarted",
     "SessionReady",

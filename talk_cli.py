@@ -53,6 +53,7 @@ try:
         talk_grok_auth,
         talk_grok_realtime,
         talk_host,
+        talk_host_duplex,
         talk_identity,
         talk_lifecycle,
         talk_local_realtime,
@@ -84,6 +85,7 @@ except ImportError:  # pragma: no cover - flat-module fallback (Hermes file-path
     import talk_grok_auth
     import talk_grok_realtime
     import talk_host
+    import talk_host_duplex
     import talk_identity
     import talk_lifecycle
     import talk_local_realtime
@@ -664,7 +666,7 @@ class HostExecutionRelay:
             # cannot diverge.
             name = _event_tool_name(event)
             denial = self.tool_authorizer(name, event)
-            if denial is None:
+            if denial is None and not talk_host_duplex.canonical(self.attachment):
                 # WHO may act is settled; WHAT may run on this thread is a
                 # separate, transport-independent question.
                 denial = _host_tool_classification_denial(name, event)
@@ -680,6 +682,15 @@ class HostExecutionRelay:
             if type(arguments) is not dict or not response_id or not item_id:
                 outputs[position] = self._output(call_id, HOST_TOOL_ARGUMENT_ERROR)
                 continue
+            speaker = {}
+            if talk_host_duplex.canonical(self.attachment):
+                binding = event.get(talk_operator_auth.TRUSTED_BINDING_EVENT_KEY)
+                speaker = {'speaker_user_id': getattr(binding, 'user_id', None),
+                           'input_item_id': getattr(binding, 'input_item_id', None)}
+                if speaker['speaker_user_id'] is None:
+                    outputs[position] = self._output(
+                        call_id, 'Missing authenticated voice speaker.')
+                    continue
             permits.append(
                 self.attachment.mint_tool_call_permit(
                     response_id=response_id,
@@ -688,6 +699,7 @@ class HostExecutionRelay:
                     batch_id=batch_id,
                     tool_name=event["name"],
                     arguments=arguments,
+                    **speaker,
                 )
             )
             permitted_positions.append(position)
@@ -1653,6 +1665,7 @@ async def run_talk_session(
         talk_host.host().identity_sections(),
         tools=tools,
         host_execution=host_execution_attachment is not None,
+        canonical_history=talk_host_duplex.canonical(host_execution_attachment),
         lane=lane,
         host_summary=_host_summary_line() if lane == "cli" else None,
         capabilities=talk_capabilities.instruction_section(catalog_snapshot),
@@ -1676,10 +1689,16 @@ async def run_talk_session(
         talk_operator_auth.DiscordToolAuthorizationLedger(
             # xAI's response.created never echoes the metadata we send.
             echoes_response_metadata=provider != "grok",
+            canonical_speaker_allowed=(host_execution_attachment.admits_speaker
+                if talk_host_duplex.canonical(host_execution_attachment) else None),
         )
         if discord_authorization
         else None
     )
+    host_projection = None
+    if talk_host_duplex.canonical(host_execution_attachment) and authorization_ledger is not None:
+        host_projection = talk_host_duplex.HostDuplexProjection(
+            host_execution_attachment, authorization_ledger)
     # ENFORCED, not documented: `authorization_ledger is None` has to mean
     # "this transport declared no remote speakers". It holds by construction
     # three lines up, but the place that RELIES on it is the tool-authorizer
@@ -1801,6 +1820,13 @@ async def run_talk_session(
     try:
         session = (session_factory or _realtime_session)(auth)
         await session.connect(setup)
+        if talk_host_duplex.canonical(host_execution_attachment):
+            history = host_execution_attachment.initial_history()
+            if history:
+                await session.send(tuple(talk_realtime.ReplayConversationMessage(
+                    item_id=f"hermes-history-{index}",
+                    role=talk_realtime.TranscriptRole(row['role']),
+                    text=row['content']) for index, row in enumerate(history)))
     except asyncio.CancelledError:
         if session is not None:
             with suppress(Exception):
@@ -1916,6 +1942,8 @@ async def run_talk_session(
                 if chunk is None:
                     await asyncio.sleep(IDLE_POLL_S)
                     continue
+                if host_projection is not None:
+                    speaker, chunk = host_projection.filter_audio(speaker, chunk)
                 if authorization_ledger is not None:
                     authorization_ledger.record_packet(speaker, chunk)
                 await send_outgoing(packet_lane.commands(speaker, chunk))
@@ -2051,6 +2079,8 @@ async def run_talk_session(
                 if isinstance(event, talk_realtime.ProviderFailure) and event.terminal:
                     relay.handle_realtime_event(event)
                     raise talk_realtime.RealtimeSessionError(event.detail)
+                if host_projection is not None:
+                    host_projection.observe(event)
                 if isinstance(event, talk_realtime.ResponseStarted):
                     continuation_pending = False
                 if isinstance(event, talk_realtime.FunctionCall):

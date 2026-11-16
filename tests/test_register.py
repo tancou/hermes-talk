@@ -937,3 +937,32 @@ def test_terminal_routing_without_gateway_module(plugin, monkeypatch):
     monkeypatch.setattr(plugin.talk_cli, "cli_entry", lambda **kw: 0)
     assert plugin._talk_command("") == "Voice session ended."
     assert "terminal" in plugin._talk_command("join")
+def test_duplex_capability_takes_precedence_over_transcription(plugin, monkeypatch):
+    import asyncio
+    import types
+    seen = []
+    attachment = types.SimpleNamespace(factory=types.SimpleNamespace(operator_only=True),
+                                       close=lambda: seen.append('closed'))
+
+    async def capture():
+        return attachment
+
+    invocation = types.SimpleNamespace(
+        realtime_execution_version=1, transcription_ingress_version=1,
+        realtime_voice_default=True, capture_realtime_execution_attachment=capture)
+
+    def start(**kwargs):
+        seen.append(kwargs['host_execution_attachment'])
+        plugin.talk_discord._SESSION['mode'] = 'provider-host-tools'
+        return 'duplex started'
+
+    monkeypatch.setattr(plugin.talk_discord, 'start_session', start)
+    async def join():
+        return await plugin._talk_command('join', invocation)
+
+    try:
+        assert asyncio.run(join()) == 'duplex started'
+        assert seen == [attachment]
+        assert plugin.talk_discord._SESSION['canonical_duplex'] is True
+    finally:
+        plugin.talk_discord._SESSION.clear()
