@@ -129,6 +129,13 @@ async def run_core_session(
 
         audio = DiscordAudio(guild_id, capture_only=True)
 
+    if getattr(factory, "transcription_ingress_version", None) == 1:
+        try:
+            from .talk_continuous_stt import run_discord_ingress
+        except ImportError:
+            from talk_continuous_stt import run_discord_ingress
+        return await run_discord_ingress(factory, audio=audio, status_callback=status_callback)
+
     attachment = None
     try:
         attachment = await factory.open(

@@ -394,7 +394,7 @@ class _OpenAIWireSession:
         stack = AsyncExitStack()
         try:
             try:
-                descriptor = self._mint_session(
+                descriptor = await asyncio.to_thread(self._mint_session,
                     model=model,
                     voice=voice,
                     instructions=instructions,

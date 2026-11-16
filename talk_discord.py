@@ -1674,8 +1674,13 @@ def session_status() -> str:
                 f"task {selected['session_id']}; say `talk leave` to stop.")
     if mode == "core":
         if core_status == "listening":
+            with _SESSION_LOCK:
+                policy = _SESSION.get("speaker_policy", "operator only")
+                paused = bool(getattr(_SESSION.get("audio"), "_input_paused", False))
             return (
-                f"Canonical core voice is listening live on server {guild_id} — "
+                f"Canonical core voice is {'paused' if paused else 'listening live'} "
+                f"on server {guild_id} "
+                f"({policy}) — "
                 "say `talk leave` to stop."
             )
         return f"Canonical core voice is starting on server {guild_id} — say `talk leave` to stop."
@@ -1691,7 +1696,7 @@ def session_status() -> str:
         )
     return (
         f"Limited legacy provider-owned voice is live on server {guild_id}. "
-        "Use `/talk core join` for full canonical Hermes parity; say `talk leave` to stop."
+        "Use `/talk core join` if supported by your Hermes host; say `talk leave` to stop."
         f"{paused}"
     )
 
@@ -1724,6 +1729,18 @@ def _set_session_paused(paused: bool) -> str:
     if task is None or task.done():
         return "I'm not in a voice session right now."
     if mode == "core":
+        with _SESSION_LOCK:
+            audio = _SESSION.get("audio")
+            continuous = _SESSION.get("continuous_core", False)
+        if continuous and audio is not None:
+            if paused:
+                audio.pause_input()
+            else:
+                audio.resume_input()
+            return (
+                "Canonical voice microphone paused." if paused
+                else "Canonical voice microphone resumed."
+            )
         # The canonical core lane is input-only and host-owned: the host's
         # orchestrator decides what it hears and says, not this plugin.
         return "The canonical core lane doesn't pause — say `talk leave` to stop it."
@@ -1899,6 +1916,11 @@ def start_core_session(factory: object, guild_id: int | None = None) -> str:
                 "guild_id": bridge["guild_id"],
                 "audio": audio,
                 "mode": "core",
+                "continuous_core": getattr(factory, "transcription_ingress_version", None) == 1,
+                "speaker_policy": (
+                    "operator only" if getattr(factory, "operator_only", True)
+                    else "authorized room members"
+                ),
                 "status": "starting",
                 "generation": generation,
             }
@@ -2098,8 +2120,8 @@ def start_session(
             "`talk status` to check or `talk leave` to stop."
         )
     return (
-        "Starting limited legacy provider-owned voice. Use `/talk core join` for full "
-        "canonical Hermes parity; say `talk status` to check or `talk leave` to stop."
+        "Starting limited legacy provider-owned voice. Use `/talk core join` if supported "
+        "by your Hermes host; say `talk status` to check or `talk leave` to stop."
     )
 
 
