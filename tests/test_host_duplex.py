@@ -146,3 +146,50 @@ def test_native_prompt_and_replay_preserve_history_roles():
         event = encode_command(rt.ReplayConversationMessage("history-1", role, "prior context"))
         assert event["item"]["role"] == role.value
         assert event["item"]["content"] == [{"type": content_type, "text": "prior context"}]
+
+
+def test_trusted_room_attributes_unresolved_audio_to_owner_and_keeps_permit_live(monkeypatch):
+    attachment = Attachment()
+    attachment.trusted_room = True
+    attachment.operator_user_id = 42
+    ledger = talk_operator_auth.DiscordToolAuthorizationLedger(
+        canonical_speaker_allowed=attachment.admits_speaker, trusted_room_owner=42
+    )
+    projection = talk_host_duplex.HostDuplexProjection(attachment, ledger)
+    speaker, pcm = projection.filter_audio({"user_id": None}, b"\x01\x02")
+    assert speaker["user_id"] == 42 and pcm == b"\x01\x02"
+    ledger.record_packet({"user_id": None}, _pcm(20))
+    _bind_response(ledger)
+    event = _make_tool_event(ledger, tool_name="terminal", arguments='{"command":"pwd"}')
+    then = talk_operator_auth.time.monotonic()
+    monkeypatch.setattr(talk_operator_auth.time, "monotonic", lambda: then + 3600)
+    assert ledger.authorize_tool("terminal", event) is None
+    assert ledger.authorize_tool("terminal", event) is not None
+    assert ledger.binding_for_response("resp-1").user_id == 42
+
+
+def test_canonical_execution_error_returns_a_result_without_ending_voice():
+    class FailingAttachment(Attachment):
+        async def execute_tool_batch(self, permits):
+            raise RuntimeError("synthetic native refusal")
+
+    attachment = FailingAttachment()
+    ledger = talk_operator_auth.DiscordToolAuthorizationLedger(
+        canonical_speaker_allowed=attachment.admits_speaker
+    )
+    ledger.record_packet(_speaker(42), _pcm(20))
+    _bind_response(ledger)
+    event = _make_tool_event(ledger, tool_name="terminal", arguments='{"command":"pwd"}')
+    relay = talk_cli.HostExecutionRelay(attachment, tool_authorizer=ledger.authorize_tool)
+    result = asyncio.run(relay.handle_tool_batch_async((event,), "batch"))
+    assert "could not confirm execution" in result[0][0].output
+
+
+def test_trusted_owner_prompt_reports_actual_approval_policy():
+    import talk_identity
+
+    prompt = talk_identity.build_instructions(
+        {}, canonical_history=True, trusted_room=True, approvals_disabled=True
+    )
+    assert "private Discord room as trusted" in prompt
+    assert "without asking for another confirmation" in prompt

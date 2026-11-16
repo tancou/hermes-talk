@@ -322,8 +322,9 @@ async def _start_canonical_duplex(invocation):
             if started:
                 talk_discord._SESSION["canonical_duplex"] = True
                 talk_discord._SESSION["speaker_policy"] = (
-                    "operator only" if attachment.factory.operator_only
-                    else "authorized room members")
+                    "trusted room as owner" if getattr(attachment, "trusted_room", False)
+                    else ("operator only" if attachment.factory.operator_only
+                          else "authorized room members"))
         if not started:
             attachment.close()
         return result

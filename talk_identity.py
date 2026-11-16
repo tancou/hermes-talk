@@ -332,6 +332,8 @@ def build_instructions(
     host_execution: bool = False,
     canonical_task: bool = False,
     canonical_history: bool = False,
+    trusted_room: bool = False,
+    approvals_disabled: bool = False,
     lane: str | None = None,
     host_summary: str | None = None,
     capabilities: str | None = None,
@@ -408,6 +410,16 @@ def build_instructions(
     language_line = reply_language_line(reply_language)
     if language_line:
         contracts.insert(0, language_line)
+    if canonical_history and trusted_room:
+        sections.append("The owner configured this private Discord room as trusted. Its spoken "
+                        "requests are attributed to the initiating owner, including mixed or "
+                        "unresolved Discord speaker attribution.")
+    if canonical_history and approvals_disabled:
+        sections.append("The owner disabled Hermes tool approval prompts for this profile. "
+                        "Treat their action requests as authorization to perform the requested "
+                        "work without asking for another confirmation. Ask only for genuinely "
+                        "missing task details; honor explicit constraints and report actual errors."
+                        )
     preamble = CANONICAL_VOICE_PREAMBLE if canonical_history else VOICE_PREAMBLE
     return preamble + "\n\n" + "\n\n".join([*contracts, *sections])
 

@@ -61,6 +61,40 @@ text channel. Pause affects microphone capture, not already admitted tool work.
 Older hosts retain their available behavior. Doctor's older optional realtime API-v2
 warnings do not describe this new invocation-bound attachment; inspect live status.
 
+## Dedicated owner and trusted room
+
+For a private room fully owned by the operator:
+
+```yaml
+discord:
+  voice_engine: realtime
+  voice_trusted_room: true
+approvals:
+  mode: off
+```
+
+`voice_trusted_room` defaults to false. When true, all audio from this bound room
+is attributed to the person who started Talk, including unknown or overlapping
+Discord speaker attribution. The legacy spoken-permit expiry does not reject
+those calls. This supersedes `voice_operator_only` for audio. Use it when every
+participant in that room may act as the initiating owner. Status reports
+`trusted room as owner`. Leave/rejoin to change the voice policy.
+
+`approvals.mode: off` is Hermes's existing profile-wide approval setting; it also
+applies to ordinary text and child tasks in this profile. The voice prompt reports
+that setting so the model does not add an unnecessary confirmation round. Explicit
+plugin blocks and external OS/service access constraints remain separate. Existing
+optional settings include `security.protected_instruction_files: false` to allow
+instruction-file writes without a human prompt, `security.allow_private_urls: true`
+for private network URLs, and `approvals.mcp_reload_confirm: false`.
+
+The gateway's receiving adapter callback still carries the real bot/profile
+provenance. Trusting room audio does not invent a different runtime profile. This
+fixes the native `authorization_home_without_provenance` refusal observed on
+multiplexed devops; the regression test now uses real profile callback wiring.
+A native execution error is returned as an unconfirmed tool outcome instead of
+terminating the entire audio session; uncertain operations are not retried blindly.
+
 ## Acceptance checks
 
 1. Start on the intended profile; verify status names Realtime duplex/canonical tools.
