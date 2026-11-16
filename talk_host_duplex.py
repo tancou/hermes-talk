@@ -51,6 +51,11 @@ class HostDuplexProjection:
                     input_item_id=binding.input_item_id)
 
     def filter_audio(self, speaker, chunk):
+        if getattr(self.attachment, 'trusted_room', False):
+            owner = self.attachment.operator_user_id
+            if not self.attachment.admits_speaker(owner):
+                return None, bytes(len(chunk))
+            return {**(speaker or {}), 'user_id': owner}, chunk
         user = speaker.get('user_id') if isinstance(speaker, dict) else None
         if user is None or not self.attachment.admits_speaker(user):
             return None, bytes(len(chunk))

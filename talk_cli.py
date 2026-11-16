@@ -705,7 +705,15 @@ class HostExecutionRelay:
             permitted_positions.append(position)
 
         if permits:
-            results = await self.attachment.execute_tool_batch(tuple(permits))
+            try:
+                results = await self.attachment.execute_tool_batch(tuple(permits))
+            except (RuntimeError, PermissionError, TimeoutError) as exc:
+                if not talk_host_duplex.canonical(self.attachment):
+                    raise
+                detail = (f'Hermes could not confirm execution ({type(exc).__name__}). '
+                          'Do not claim success or retry an uncertain operation automatically.')
+                results = [{'call_id': events[p]['call_id'], 'output': detail}
+                           for p in permitted_positions]
             by_call_id = {result["call_id"]: result["output"] for result in results}
             for position in permitted_positions:
                 call_id = events[position]["call_id"]
@@ -1666,6 +1674,10 @@ async def run_talk_session(
         tools=tools,
         host_execution=host_execution_attachment is not None,
         canonical_history=talk_host_duplex.canonical(host_execution_attachment),
+        trusted_room=(talk_host_duplex.canonical(host_execution_attachment)
+                      and getattr(host_execution_attachment, 'trusted_room', False)),
+        approvals_disabled=(talk_host_duplex.canonical(host_execution_attachment)
+                            and getattr(host_execution_attachment, 'approvals_disabled', False)),
         lane=lane,
         host_summary=_host_summary_line() if lane == "cli" else None,
         capabilities=talk_capabilities.instruction_section(catalog_snapshot),
@@ -1689,6 +1701,9 @@ async def run_talk_session(
         talk_operator_auth.DiscordToolAuthorizationLedger(
             # xAI's response.created never echoes the metadata we send.
             echoes_response_metadata=provider != "grok",
+            trusted_room_owner=(host_execution_attachment.operator_user_id
+                if talk_host_duplex.canonical(host_execution_attachment)
+                and getattr(host_execution_attachment, 'trusted_room', False) else None),
             canonical_speaker_allowed=(host_execution_attachment.admits_speaker
                 if talk_host_duplex.canonical(host_execution_attachment) else None),
         )

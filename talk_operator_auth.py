@@ -348,12 +348,15 @@ class DiscordToolAuthorizationLedger:
         max_seen_call_ids: int = _DEFAULT_MAX_SEEN_CALL_IDS,
         echoes_response_metadata: bool = True,
         canonical_speaker_allowed=None,
+        trusted_room_owner=None,
     ) -> None:
         # False for a provider whose response.created never returns the
         # metadata we sent (xAI Grok). Such a lane binds by order instead:
         # see note_response_created.
         self._echoes_response_metadata = bool(echoes_response_metadata)
         self._canonical_speaker_allowed = canonical_speaker_allowed
+        self._trusted_room_owner = (trusted_room_owner if canonical_speaker_allowed is not None
+                                    and type(trusted_room_owner) is int else None)
         self._max_segments = max(1, int(max_segments))
         self._max_responses = max(1, int(max_responses))
         self._max_seen_item_ids = max(1, int(max_seen_item_ids))
@@ -489,6 +492,10 @@ class DiscordToolAuthorizationLedger:
         return True
 
     def _binding_for_interval(self, start_ms: Any, end_ms: Any) -> SpeakerBinding:
+        if self._trusted_room_owner is not None:
+            return self._new_binding(self._trusted_room_owner,
+                                     'owner-configured trusted voice room',
+                                     authorized_at=time.monotonic())
         if (
             isinstance(start_ms, bool)
             or isinstance(end_ms, bool)
@@ -837,7 +844,8 @@ class DiscordToolAuthorizationLedger:
         # only) by the spoken-target cross-check at mint time.
         args_hash, _target = _canonical_call(name, event.get("arguments"))
         with self._lock:
-            expired = isinstance(permit, _CallPermit) and permit.expires_at < now
+            expired = (self._trusted_room_owner is None
+                       and isinstance(permit, _CallPermit) and permit.expires_at < now)
             rewritten = isinstance(permit, _CallPermit) and not hmac.compare_digest(
                 permit.args_hash, args_hash
             )
