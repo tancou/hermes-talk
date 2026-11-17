@@ -318,7 +318,7 @@ async def _start_canonical_duplex(invocation):
     try:
         result = talk_discord.start_session(host_execution_attachment=attachment)
         with talk_discord._SESSION_LOCK:
-            started = talk_discord._SESSION.get("mode") == "provider-host-tools"
+            started = talk_discord._SESSION.get("host_execution_attachment") is attachment
             if started:
                 talk_discord._SESSION["canonical_duplex"] = True
                 talk_discord._SESSION["speaker_policy"] = (

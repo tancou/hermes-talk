@@ -954,6 +954,7 @@ def test_duplex_capability_takes_precedence_over_transcription(plugin, monkeypat
     def start(**kwargs):
         seen.append(kwargs['host_execution_attachment'])
         plugin.talk_discord._SESSION['mode'] = 'provider-host-tools'
+        plugin.talk_discord._SESSION['host_execution_attachment'] = attachment
         return 'duplex started'
 
     monkeypatch.setattr(plugin.talk_discord, 'start_session', start)
