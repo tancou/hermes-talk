@@ -23,6 +23,8 @@ as a native turn. Input attribution uses immutable Discord IDs and the exact VAD
 input item, including when transcription arrives after the first response. Tools
 wait up to 30 seconds for that final transcript. Missing attribution or transcription
 refuses execution. Mixed-speaker intervals cannot authorize tools.
+VAD/commit order advances the native input timeline; final transcripts only
+complete their own items, so a late final cannot close a newer tool turn.
 
 The first implementation requires a host agent using the `chat_completions` protocol
 (e.g. the configured OpenRouter devops profile); it refuses other host protocols.
@@ -46,7 +48,9 @@ hermes -p devops config set discord.voice_operator_only false
 
 `voice_operator_only: false` admits other currently authorized human members of the
 same room, under their own Discord identities. `true` admits only the initiating
-operator. Leave/rejoin after changing it. The switch relaxes room-speaker selection;
+operator. Leave/rejoin after changing it. The switch relaxes room-speaker selection.
+Realtime admits only members whose freshly resolved route matches this attachment's
+profile; another profile requires its own attachment. STT keeps native per-speaker routing.
 Discord access rules, profile isolation and normal tool approvals remain active.
 `TALK_DISCORD_OPERATOR_USER_IDS` governs the separate legacy executor. Canonical
 mode replaces the legacy fixed tool allowlist with the host's actual tool policy.
@@ -90,6 +94,11 @@ for private network URLs, and `approvals.mcp_reload_confirm: false`.
 
 The gateway's receiving adapter callback still carries the real bot/profile
 provenance. Trusting room audio does not invent a different runtime profile. This
+also binds audio capture and playback to the captured adapter, connection and
+room, even when the runtime profile owns a different bot in the same server.
+STT uses the same bound transport. Reconnects invalidate it instead of selecting
+another connection. A refused concurrent join closes only its new attachment and
+leaves the running session's policy intact. This
 fixes the native `authorization_home_without_provenance` refusal observed on
 multiplexed devops; the regression test now uses real profile callback wiring.
 A native execution error is returned as an unconfirmed tool outcome instead of

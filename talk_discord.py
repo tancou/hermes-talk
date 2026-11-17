@@ -46,10 +46,11 @@ from dataclasses import dataclass
 from typing import Any
 
 try:
-    from . import talk_audio, talk_config, talk_pause
+    from . import talk_audio, talk_config, talk_host_duplex, talk_pause
 except ImportError:  # pragma: no cover - flat-module fallback (Hermes file-path load)
     import talk_audio
     import talk_config
+    import talk_host_duplex
     import talk_pause
 
 _log = logging.getLogger(__name__)
@@ -365,6 +366,23 @@ def resolve_voice_bridge(guild_id: int | None = None) -> dict[str, Any]:
     }
 
 
+def _bound_voice_bridge(factory) -> dict[str, Any]:
+    """Borrow the receiving bot captured by the host, never the routed profile's bot."""
+    try:
+        factory.check_binding()
+    except (RuntimeError, PermissionError) as exc:
+        raise TalkDiscordError("the captured Discord voice connection changed") from exc
+    adapter, guild_id = factory.adapter, factory.guild_id
+    voice = factory.voice_client
+    receiver = getattr(adapter, "_voice_receivers", {}).get(guild_id)
+    bridge = {"guild_id": guild_id, "adapter": adapter,
+              "voice_client": voice, "receiver": receiver}
+    if (receiver is None or voice.channel.id != factory.channel_id
+            or not DiscordAudio._published_bridge_is_exact(bridge)):
+        raise TalkDiscordError("the captured Discord voice connection changed")
+    return bridge
+
+
 class _FinalAudio(bytes):
     """The last admitted PCM chunk of one provider response."""
 
@@ -556,9 +574,12 @@ class DiscordAudio:
     # dashboard sessions deliberately keep their existing authorization path.
     discord_speaker_authorization = True
 
-    def __init__(self, guild_id: int | None = None, *, capture_only: bool = False) -> None:
+    def __init__(self, guild_id: int | None = None, *, capture_only: bool = False,
+                 bound_bridge=None, binding_guard=None) -> None:
         self._guild_id = guild_id
         self._capture_only = capture_only
+        self._bound_bridge = bound_bridge
+        self._binding_guard = binding_guard
         self._bridge: dict[str, Any] | None = None
         self._source: _RealtimeSource | None = None
         self._inbound: queue.Queue[InputAudioPacket] = queue.Queue(maxsize=MAX_INPUT_FRAMES)
@@ -735,7 +756,13 @@ class DiscordAudio:
         # also invalidates deliveries already queued on the old loop.
         self._detach_speaker_notifier()
         try:
-            bridge = resolve_voice_bridge(self._guild_id)
+            if self._bound_bridge is None:
+                bridge = resolve_voice_bridge(self._guild_id)
+            else:
+                self._binding_guard()
+                bridge = self._bound_bridge
+                if not self._published_bridge_is_exact(bridge):
+                    raise TalkDiscordError("the captured Discord voice connection changed")
         except TalkDiscordError as exc:
             raise talk_audio.TalkAudioError(str(exc)) from exc
 
@@ -1249,6 +1276,11 @@ class DiscordAudio:
         bridge = self._bridge
         if bridge is None:
             return True
+        if self._binding_guard is not None:
+            try:
+                self._binding_guard()
+            except (RuntimeError, PermissionError):
+                return False
         return self._published_bridge_is_exact(bridge, receiver)
 
     @staticmethod
@@ -1865,7 +1897,8 @@ def start_core_session(factory: object, guild_id: int | None = None) -> str:
         return "Canonical core voice requires the running Hermes gateway."
 
     try:
-        bridge = resolve_voice_bridge(guild_id)
+        bound = getattr(factory, "transcription_ingress_version", None) == 1
+        bridge = _bound_voice_bridge(factory) if bound else resolve_voice_bridge(guild_id)
     except TalkDiscordError as exc:
         return str(exc)
 
@@ -1874,7 +1907,9 @@ def start_core_session(factory: object, guild_id: int | None = None) -> str:
     except ImportError:  # pragma: no cover - flat-module fallback
         import talk_core_session
 
-    audio = DiscordAudio(bridge["guild_id"], capture_only=True)
+    audio = (DiscordAudio(bridge["guild_id"], capture_only=True, bound_bridge=bridge,
+                          binding_guard=factory.check_binding) if bound
+             else DiscordAudio(bridge["guild_id"], capture_only=True))
     task = None
     generation = None
 
@@ -2002,7 +2037,9 @@ def start_session(
         return "That needs the gateway's event loop — run `hermes talk` in a shell instead."
 
     try:
-        bridge = resolve_voice_bridge(guild_id)
+        bound = talk_host_duplex.canonical(host_execution_attachment)
+        bridge = (_bound_voice_bridge(host_execution_attachment.factory) if bound
+                  else resolve_voice_bridge(guild_id))
     except TalkDiscordError as exc:
         return str(exc)
 
@@ -2013,7 +2050,9 @@ def start_session(
 
     if native_task is not None and host_execution_attachment is not None:
         return "Choose one canonical task attachment before joining Discord voice."
-    audio = DiscordAudio(bridge["guild_id"])
+    audio = (DiscordAudio(bridge["guild_id"], bound_bridge=bridge,
+                          binding_guard=host_execution_attachment.factory.check_binding)
+             if bound else DiscordAudio(bridge["guild_id"]))
     generation = None
 
     def bind_controller(controller):
@@ -2031,6 +2070,8 @@ def start_session(
     def _done(finished) -> None:
         global _LAST_FAILURE, _LAST_FAILURE_GENERATION
 
+        if host_execution_attachment is not None:
+            host_execution_attachment.close()
         failure = None
         diagnostic_name = None
         try:
@@ -2156,6 +2197,7 @@ def start_session(
                     "provider-host-tools" if host_execution_attachment is not None else "legacy"
                 ),
                 "generation": generation,
+                "host_execution_attachment": host_execution_attachment,
             }
         )
 

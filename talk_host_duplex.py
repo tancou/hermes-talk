@@ -18,7 +18,12 @@ class HostDuplexProjection:
         self.seen_responses = set()
 
     def observe(self, event):
-        if isinstance(event, rt.Transcript):
+        if isinstance(event, (rt.SpeechStopped, rt.InputAudioCommitted)):
+            user = self.ledger.input_speaker(event.input_id)
+            start = getattr(self.attachment, 'note_input_started', None)
+            if user is not None and callable(start) and self.attachment.admits_speaker(user):
+                start(user, input_item_id=event.input_id)
+        elif isinstance(event, rt.Transcript):
             if event.role == rt.TranscriptRole.USER and event.final:
                 if event.item_id in self.seen_inputs:
                     return

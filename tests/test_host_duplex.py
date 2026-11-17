@@ -148,6 +148,23 @@ def test_native_prompt_and_replay_preserve_history_roles():
         assert event["item"]["content"] == [{"type": content_type, "text": "prior context"}]
 
 
+def test_vad_and_commit_advance_host_inputs_before_reversed_final_transcripts():
+    attachment = Attachment()
+    attachment.started = []
+    attachment.note_input_started = lambda user, **kw: attachment.started.append(
+        (user, kw["input_item_id"]))
+    ledger = SimpleNamespace(input_speaker=lambda _: 42)
+    projection = talk_host_duplex.HostDuplexProjection(attachment, ledger)
+    for item in ("A", "B"):
+        projection.observe(rt.SpeechStopped(input_id=item, offset_ms=20))
+        projection.observe(rt.InputAudioCommitted(input_id=item))
+    for item in ("B", "A"):
+        projection.observe(rt.Transcript(role=rt.TranscriptRole.USER, text=item, final=True,
+                           provenance=rt.TranscriptProvenance.INPUT_AUDIO, item_id=item))
+    assert attachment.started == [(42, "A"), (42, "A"), (42, "B"), (42, "B")]
+    assert attachment.inputs == [(42, "B"), (42, "A")]
+
+
 def test_trusted_room_attributes_unresolved_audio_to_owner_and_keeps_permit_live(monkeypatch):
     attachment = Attachment()
     attachment.trusted_room = True
