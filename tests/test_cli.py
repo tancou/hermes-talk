@@ -1993,19 +1993,25 @@ def test_an_audio_device_without_the_drain_signal_never_starves_the_pump(monkeyp
     assert accepted == [True]
 
 
-def test_the_production_busy_predicate_includes_the_speaker():
-    """The gate is only real if the shipped predicate carries it (#50)."""
+def test_the_production_busy_predicate_includes_the_speaker(monkeypatch):
+    """The poll and the actual wire gate both follow playback, including after drain."""
+    audio = _GateAudio(True)
+    observed = []
 
-    source = inspect.getsource(talk_cli.run_talk_session)
-    start = source.index("pump = asyncio.create_task(")
-    predicate = source[start : source.index("tool_worker = asyncio.create_task(", start)]
+    def pump_factory(ws):
+        async def probe(_queue, _relay, _ws, send_batch, busy, _on_starved=None):
+            command = talk_cli.talk_realtime.AddContext(item_id='gate-probe', text='hi')
+            observed.append((busy(), await send_batch([command], is_announcement=True)))
+            audio.playback_pending = False
+            observed.append((busy(), await send_batch([command], is_announcement=True)))
+            ws.done.set()
+            await asyncio.Event().wait()
+        return probe
 
-    assert "speaker_busy()" in predicate
-    # And the in-lock re-check, which is the one that owns the wire.
-    lock_check = source[
-        source.index("async def send_outgoing") : source.index("async def send_microphone")
-    ]
-    assert "speaker_busy()" in lock_check
+    code, ws = _speaker_gate_harness(monkeypatch, audio, pump_factory)
+    assert code == 0
+    assert observed == [(True, False), (False, True)]
+    assert sum(m.get('item', {}).get('id') == 'gate-probe' for m in ws.sent) == 1
 
 
 def test_subagent_stop_messages_cap_the_summary_tail():
