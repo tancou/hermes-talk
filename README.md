@@ -145,6 +145,11 @@ the additional host support described in the [Desktop guide](docs/DESKTOP.md).
 
 Every version with its receipts: [CHANGELOG.md](CHANGELOG.md).
 
+On a host implementing [canonical Discord voice](docs/CANONICAL-DISCORD.md),
+completed delegations and new text messages can also join the active voice
+context. The versioned conversation feed catches up before each answer while
+keeping spoken announcements behind the user's turn.
+
 ## Providers and billing
 
 | Lane | How it authenticates | Default model | Surfaces |

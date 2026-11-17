@@ -191,6 +191,12 @@ a self-hosted model server.
 - Plugin Guard CI follows the upstream scanner's new module paths and includes
   its shared threat-pattern module. Missing scanners and critical/high findings
   continue to fail the gate.
+- Canonical Discord duplex receives completed delegation results and new text
+  messages incrementally from its bound Hermes conversation. Context is caught
+  up before each response; result announcements wait for user speech and
+  playback to finish. Native voice tool results are not replayed twice, and
+  failed context writes remain retryable. Requires the host's versioned
+  conversation-sync capability. Contributed by @tancou.
 - REST skill and toolset discovery accepts OpenAI-style `data` list envelopes
   alongside bare lists and named envelopes. Named lists keep precedence,
   non-object entries are filtered, and invalid response shapes still fail.

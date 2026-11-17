@@ -26,6 +26,31 @@ refuses execution. Mixed-speaker intervals cannot authorize tools.
 VAD/commit order advances the native input timeline; final transcripts only
 complete their own items, so a late final cannot close a newer tool turn.
 
+### Live context and asynchronous results
+
+Hosts exposing `conversation_sync_version == 1` provide committed additions to the
+exact bound conversation. Talk polls this journal while the call is open and drains
+it again immediately before every `response.create`, including tool continuations.
+Completed delegations and new Discord text therefore become model context without
+rejoining or polling `delegate_task(action="list")`. That tool lists active work;
+it is not a completed-result inbox.
+
+Message IDs and origins survive delivery. Internal results are assistant data with
+an explicit provenance envelope, not invented user instructions. Native voice
+input/tool/speech rows already delivered by Realtime are excluded from the tail.
+Only successfully transmitted batches are acknowledged. Failed writes terminate
+the connection; unacknowledged batches remain replayable, and a new attachment
+starts with the host's bounded historical snapshot plus subsequent additions.
+There is no persistent WebSocket resume or guarantee of exactly-once spoken
+announcements across a process crash.
+
+Context delivery continues while the user speaks. A spontaneous result announcement
+waits for an idle response, idle playback and no pending user turn. A user's next
+answer takes precedence over a redundant announcement. Logs distinguish committed
+rows, context transmission, announcement requests and completed playback; they
+contain identifiers, not result text. A context read failure or session replacement
+ends the attachment instead of answering from stale or foreign context.
+
 The first implementation requires a host agent using the `chat_completions` protocol
 (e.g. the configured OpenRouter devops profile); it refuses other host protocols.
 This restriction concerns the host executor, not Realtime audio authentication.
