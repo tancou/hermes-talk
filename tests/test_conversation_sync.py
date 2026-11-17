@@ -161,7 +161,10 @@ def test_large_internal_results_are_bounded_data_chunks_with_stable_ids():
     assert len(commands) > 1
     assert all(len(c.text) <= 32000 for c in commands)
     assert len({c.item_id for c in commands}) == len(commands)
+    assert all(len(c.item_id) <= 32 for c in commands)
     assert commands == sync.commands_for([message(content=result)])
+    assert commands[0].item_id != sync.commands_for([message(number=2)])[0].item_id
+    assert commands[0].item_id != sync.commands_for([message(session='other')])[0].item_id
 
 
 def test_provider_context_rejection_is_terminal_but_unrelated_errors_remain_recoverable():
@@ -172,7 +175,7 @@ def test_provider_context_rejection_is_terminal_but_unrelated_errors_remain_reco
     reader.observe(rt.ProviderFailure('unrelated recoverable tool error'))
     rejection = decode_event({'type': 'error', 'error': {
         'message': 'invalid conversation item', 'event_id': request['event_id']}})
-    with pytest.raises(rt.RealtimeSessionError, match='rejected canonical'):
+    with pytest.raises(rt.RealtimeSessionError, match='rejected canonical.*invalid conversation item'):
         reader.observe(rejection)
 
 

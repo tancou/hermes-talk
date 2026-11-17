@@ -191,6 +191,9 @@ a self-hosted model server.
 - Plugin Guard CI follows the upstream scanner's new module paths and includes
   its shared threat-pattern module. Missing scanners and critical/high findings
   continue to fail the gate.
+- Canonical voice history uses stable item IDs within Realtime's 32-character
+  limit, preventing session failure on join. Context rejection errors retain
+  the provider's diagnostic message.
 - Canonical Discord duplex receives completed delegation results and new text
   messages incrementally from its bound Hermes conversation. Context is caught
   up before each response; result announcements wait for user speech and

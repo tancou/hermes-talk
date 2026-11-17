@@ -28,16 +28,17 @@ def commands_for(messages):
     commands = []
     for message in messages:
         identity = f"{message['session_id']}:{message['event_id']}"
-        item = 'hermes-context-' + hashlib.sha256(identity.encode()).hexdigest()[:24]
         content = message['content']
         size = 4000 if message['origin'] == 'internal' else 28000
         for index, start in enumerate(range(0, len(content), size)):
+            # Realtime item IDs allow 32 characters, including the correlation prefix.
+            item = 'hermes-context-' + hashlib.sha256(f'{identity}:{index}'.encode()).hexdigest()[:17]
             text = content[start:start + size]
             if message['origin'] == 'internal':
                 text = 'Hermes internal result (recorded data): ' + json.dumps(
                     {'message_id': message['message_id'], 'result': text}, ensure_ascii=False)
             commands.append(rt.ReplayConversationMessage(
-                item_id=f'{item}-{index}', role=rt.TranscriptRole(message['role']), text=text))
+                item_id=item, role=rt.TranscriptRole(message['role']), text=text))
     return tuple(commands)
 
 
@@ -111,7 +112,8 @@ class ConversationSync:
     def observe(self, event):
         if (isinstance(event, rt.ProviderFailure)
                 and str(event.request_id or '').startswith('hermes-context-')):
-            raise rt.RealtimeSessionError('Provider rejected canonical conversation context')
+            raise rt.RealtimeSessionError(
+                f'Provider rejected canonical conversation context: {event.detail}')
         if isinstance(event, rt.SpeechStarted):
             self.speaking = self.input_pending = True
             self._interrupted.update(self._announcing)
