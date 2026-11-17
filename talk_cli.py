@@ -47,6 +47,7 @@ try:
         talk_cascade_voice,
         talk_check,
         talk_config,
+        talk_conversation_sync,
         talk_diagnostics,
         talk_doctor,
         talk_gemini_realtime,
@@ -79,6 +80,7 @@ except ImportError:  # pragma: no cover - flat-module fallback (Hermes file-path
     import talk_cascade_voice
     import talk_check
     import talk_config
+    import talk_conversation_sync
     import talk_diagnostics
     import talk_doctor
     import talk_gemini_realtime
@@ -1682,6 +1684,10 @@ async def run_talk_session(
         host_summary=_host_summary_line() if lane == "cli" else None,
         capabilities=talk_capabilities.instruction_section(catalog_snapshot),
     )
+    context_sync = (talk_conversation_sync.ConversationSync(host_execution_attachment)
+                    if talk_conversation_sync.supported(host_execution_attachment) else None)
+    if context_sync is not None:
+        instructions += talk_conversation_sync.INSTRUCTIONS
 
     # Find out NOW whether the api_server lane is up. The verdict is needed by
     # the first tool call; warming it before then avoids spending that tool's
@@ -1835,7 +1841,9 @@ async def run_talk_session(
     try:
         session = (session_factory or _realtime_session)(auth)
         await session.connect(setup)
-        if talk_host_duplex.canonical(host_execution_attachment):
+        if context_sync is not None:
+            await context_sync.start(session.send)
+        elif talk_host_duplex.canonical(host_execution_attachment):
             history = host_execution_attachment.initial_history()
             if history:
                 await session.send(tuple(talk_realtime.ReplayConversationMessage(
@@ -1890,6 +1898,11 @@ async def run_talk_session(
                 watched.add(run_id)
                 watchers.append(asyncio.create_task(watch_run(run_id)))
 
+        def announcement_busy():
+            return (relay.response_active or continuation_pending or speaker_busy()
+                    or (context_sync is not None
+                        and (context_sync.speaking or context_sync.input_pending)))
+
         async def send_outgoing(outgoing, *, is_announcement: bool = False) -> bool:
             """Serialize every provider write; keep multi-command batches contiguous.
 
@@ -1912,16 +1925,20 @@ async def run_talk_session(
                 # pump_announcements decides "the model is idle" BEFORE queuing
                 # for this lock, and a response can start while it waits there.
                 # Re-check at the point the write actually happens.
-                if is_announcement and (
-                    relay.response_active or continuation_pending or speaker_busy()
-                ):
+                if is_announcement and announcement_busy():
                     return False
                 if any(
                     isinstance(command, talk_realtime.StartResponse)
                     for command in commands
                 ):
+                    if context_sync is not None:
+                        await context_sync.flush(session.send)
+                        if is_announcement and announcement_busy():
+                            return False
                     continuation_pending = True
                 await session.send(commands)
+                if context_sync is not None:
+                    context_sync.response_sent(commands)
             start_watchers(commands)
             return True
 
@@ -2043,6 +2060,8 @@ async def run_talk_session(
         async def receive_events() -> None:
             nonlocal continuation_pending, spoken_item
             async for event in session:
+                if context_sync is not None:
+                    context_sync.observe(event)
                 if isinstance(event, talk_realtime.SessionTerminated):
                     if event.state is talk_realtime.SessionState.FAILED:
                         raise talk_realtime.RealtimeSessionError(
@@ -2317,15 +2336,29 @@ async def run_talk_session(
         )
         tool_worker = asyncio.create_task(tool_coordinator.run())
         receiver = asyncio.create_task(receive_events())
+        async def flush_context():
+            async with send_lock:
+                await context_sync.flush(session.send)
+
+        def context_busy():
+            return (relay.response_active or continuation_pending or bool(tool_coordinator.outputs)
+                    or speaker_busy() or context_sync.speaking or context_sync.input_pending)
+
+        context_worker = (asyncio.create_task(
+            context_sync.run(flush_context, send_outgoing, context_busy))
+            if context_sync is not None else None)
         drain = None
         try:
             done, _pending_tasks = await asyncio.wait(
-                {sender, pump, receiver, tool_worker},
+                {sender, pump, receiver, tool_worker,
+                 *([context_worker] if context_worker else [])},
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if sender in done:
                 await sender
                 raise RuntimeError("microphone sender stopped unexpectedly")
+            if context_worker in done:
+                await context_worker
             if tool_worker in done:
                 await tool_worker
             if pump in done:
@@ -2356,6 +2389,8 @@ async def run_talk_session(
             sender.cancel()
             pump.cancel()
             receiver.cancel()
+            if context_worker is not None:
+                context_worker.cancel()
             if drain is not None:
                 drain.cancel()
             for watcher in watchers:
@@ -2369,6 +2404,7 @@ async def run_talk_session(
                 stop_ack,
                 *([drain] if drain is not None else []),
                 *watchers,
+                *([context_worker] if context_worker is not None else []),
             }
             done, pending_cleanup = await asyncio.wait(
                 cleanup_tasks,

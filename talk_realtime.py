@@ -338,8 +338,10 @@ class ProviderFailure(RealtimeEvent):
     detail: str
     terminal: bool = False
     response_metadata: Mapping[str, str] = field(default_factory=dict)
+    request_id: str | None = None
 
     def __post_init__(self) -> None:
+        _identifier(self.request_id, 'request_id', optional=True)
         object.__setattr__(
             self, "response_metadata", _frozen_mapping(self.response_metadata)
         )
