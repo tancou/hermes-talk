@@ -206,7 +206,9 @@ def test_trusted_owner_prompt_reports_actual_approval_policy():
     import talk_identity
 
     prompt = talk_identity.build_instructions(
-        {}, canonical_history=True, trusted_room=True, approvals_disabled=True
+        {}, canonical_history=True, trusted_room=True, approvals_disabled=True,
+        reply_language="French"
     )
     assert "private Discord room as trusted" in prompt
     assert "without asking for another confirmation" in prompt
+    assert "French" in prompt

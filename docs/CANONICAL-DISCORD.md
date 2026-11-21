@@ -51,10 +51,14 @@ rows, context transmission, announcement requests and completed playback; they
 contain identifiers, not result text. A context read failure or session replacement
 ends the attachment instead of answering from stale or foreign context.
 
-The first implementation requires a host agent using the `chat_completions` protocol
-(e.g. the configured OpenRouter devops profile); it refuses other host protocols.
+The companion host implementation is proposed in
+[tancou/hermes-agent#1](https://github.com/tancou/hermes-agent/pull/1). Its published
+`204d17d188` revision requires the `chat_completions` protocol for the host executor;
+Codex Responses support currently needs additional, unpublished host changes.
 This restriction concerns the host executor, not Realtime audio authentication.
-Replay is bounded context, not live synchronization of concurrent text edits.
+Hosts without the conversation-sync capability supply initial context only. Sync
+replays committed additions; it does not mirror edits to existing messages.
+Session reset or compaction requires leaving and rejoining voice.
 
 ## Profile configuration
 

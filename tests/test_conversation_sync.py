@@ -175,7 +175,9 @@ def test_provider_context_rejection_is_terminal_but_unrelated_errors_remain_reco
     reader.observe(rt.ProviderFailure('unrelated recoverable tool error'))
     rejection = decode_event({'type': 'error', 'error': {
         'message': 'invalid conversation item', 'event_id': request['event_id']}})
-    with pytest.raises(rt.RealtimeSessionError, match='rejected canonical.*invalid conversation item'):
+    with pytest.raises(
+        rt.RealtimeSessionError, match=r'rejected canonical.*invalid conversation item'
+    ):
         reader.observe(rejection)
 
 

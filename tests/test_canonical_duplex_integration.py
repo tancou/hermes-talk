@@ -19,7 +19,8 @@ def test_projection_preserves_pending_native_turn_with_reversed_finales(tmp_path
         pytest.skip("requires the companion Agent checkout via HERMES_AGENT_REPO")
     talk = Path(__file__).resolve().parents[1]
     env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ", "SYSTEMROOT") if k in os.environ}
-    env.update(HERMES_HOME=str(tmp_path), PYTHONPATH=os.pathsep.join((str(agent), str(talk))))
+    env.update(HERMES_HOME=str(tmp_path), HERMES_DISABLE_LAZY_INSTALLS="1",
+               PYTHONPATH=os.pathsep.join((str(agent), str(talk))))
     code = textwrap.dedent("""
         import inspect
         import runpy

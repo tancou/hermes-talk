@@ -32,7 +32,8 @@ def commands_for(messages):
         size = 4000 if message['origin'] == 'internal' else 28000
         for index, start in enumerate(range(0, len(content), size)):
             # Realtime item IDs allow 32 characters, including the correlation prefix.
-            item = 'hermes-context-' + hashlib.sha256(f'{identity}:{index}'.encode()).hexdigest()[:17]
+            digest = hashlib.sha256(f'{identity}:{index}'.encode()).hexdigest()
+            item = 'hermes-context-' + digest[:17]
             text = content[start:start + size]
             if message['origin'] == 'internal':
                 text = 'Hermes internal result (recorded data): ' + json.dumps(

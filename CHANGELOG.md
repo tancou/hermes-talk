@@ -28,6 +28,9 @@ Discord playback, honest run outcomes, the transcript review loop and Gemini
 tool calls. Thanks to everyone who contributed and reported issues.
 
 ### Added
+- Discord canonical Realtime duplex and continuous transcription on compatible
+  Hermes hosts, with invocation-bound transport and speaker authorization.
+  See [docs/CANONICAL-DISCORD.md](docs/CANONICAL-DISCORD.md). Contributed by @tancou.
 - `python -m talk_twilio_server` answers calls to your own Twilio number with
   a fresh Gemini Live voice session (no task, no tools), over Twilio Media
   Streams. It is a separate opt-in server, not the Dograh Phone mode, and
@@ -81,6 +84,15 @@ tool calls. Thanks to everyone who contributed and reported issues.
   Contributed by @Philibergus.
 
 ### Fixed
+- Canonical voice history uses stable item IDs within Realtime's 32-character
+  limit, preventing session failure on join. Context rejection errors retain
+  the provider's diagnostic message.
+- Canonical Discord duplex receives completed delegation results and new text
+  messages incrementally from its bound Hermes conversation. Context is caught
+  up before each response; result announcements wait for user speech and
+  playback to finish. Native voice tool results are not replayed twice, and
+  failed context writes remain retryable. Requires the host's versioned
+  conversation-sync capability. Contributed by @tancou.
 - The dashboard Talk tab shows the `TALK_DASHBOARD_TOKEN` field again on
   current Hermes dashboards. Their `fetchJSON` throws an `ApiError` whose
   message is the route's detail alone, with the HTTP code on `status`; the tab
@@ -191,15 +203,6 @@ a self-hosted model server.
 - Plugin Guard CI follows the upstream scanner's new module paths and includes
   its shared threat-pattern module. Missing scanners and critical/high findings
   continue to fail the gate.
-- Canonical voice history uses stable item IDs within Realtime's 32-character
-  limit, preventing session failure on join. Context rejection errors retain
-  the provider's diagnostic message.
-- Canonical Discord duplex receives completed delegation results and new text
-  messages incrementally from its bound Hermes conversation. Context is caught
-  up before each response; result announcements wait for user speech and
-  playback to finish. Native voice tool results are not replayed twice, and
-  failed context writes remain retryable. Requires the host's versioned
-  conversation-sync capability. Contributed by @tancou.
 - REST skill and toolset discovery accepts OpenAI-style `data` list envelopes
   alongside bare lists and named envelopes. Named lists keep precedence,
   non-object entries are filtered, and invalid response shapes still fail.
