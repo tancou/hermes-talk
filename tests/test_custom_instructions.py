@@ -53,3 +53,50 @@ def test_custom_instructions_accept_exact_limit_and_surface_read_errors(monkeypa
     monkeypatch.setattr(type(path), "open", denied)
     with pytest.raises(PermissionError, match="unreadable deployment instructions"):
         identity.build_instructions({})
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_hybrid_session_combines_preferences_or_refuses_before_provider(
+    monkeypatch, tmp_path, valid,
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    from test_fake_provider_session import Audio, FakeProviderSession
+    from test_hybrid_session import binding
+
+    import talk_cli
+    import talk_delegated
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(talk_cli.talk_transcript, "sweep_transcripts", lambda _home: None)
+    custom = "Speak French briefly; do not repeat clear requests."
+    identity.TALK_INSTRUCTIONS_PATH.write_text(
+        custom if valid else "x" * (identity.TALK_INSTRUCTIONS_LIMIT + 1), encoding="utf-8",
+    )
+    host = SimpleNamespace(
+        resolve_auth=lambda: SimpleNamespace(token="token", source="fake-auth"),
+        identity_sections=lambda: {"USER": "Development operator"},
+    )
+    monkeypatch.setattr(talk_cli.talk_host, "host", lambda: host)
+    monkeypatch.setattr(talk_cli.talk_apiserver, "warm_in_background", lambda: None)
+    monkeypatch.setattr(talk_cli.talk_lifecycle, "attach_session", lambda *_: None)
+    monkeypatch.setattr(talk_cli.talk_lifecycle, "detach_session", lambda: None)
+    monkeypatch.setattr(talk_delegated.ConversationTail, "read", lambda _tail: [])
+    ctx = SimpleNamespace(conversation_tools=lambda **_: {"ok": True, "tools": []})
+    fake, audio, factories = FakeProviderSession(), Audio(), []
+    audio.discord_speaker_authorization = True
+    result = asyncio.run(talk_cli.run_talk_session(
+        audio=audio, delegated_binding=binding(ctx), lane="discord",
+        session_factory=lambda auth: factories.append(auth) or fake,
+    ))
+    if valid:
+        assert result == 0 and len(factories) == 1
+        prompt = fake.setup.instructions
+        assert custom in prompt and "Development operator" in prompt
+        assert prompt.startswith(identity.HYBRID_PREAMBLE)
+        assert "control_task" in prompt and "delegation_control" in prompt
+        assert "permissions and approvals still apply" in prompt
+        assert "Codex" in prompt and "not proof" in prompt
+    else:
+        assert result != 0 and factories == [] and fake.setup is None
