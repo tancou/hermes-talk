@@ -47,12 +47,14 @@ try:
         talk_cascade_voice,
         talk_check,
         talk_config,
+        talk_conversation_sync,
         talk_diagnostics,
         talk_doctor,
         talk_gemini_realtime,
         talk_grok_auth,
         talk_grok_realtime,
         talk_host,
+        talk_host_duplex,
         talk_identity,
         talk_lifecycle,
         talk_local_realtime,
@@ -78,12 +80,14 @@ except ImportError:  # pragma: no cover - flat-module fallback (Hermes file-path
     import talk_cascade_voice
     import talk_check
     import talk_config
+    import talk_conversation_sync
     import talk_diagnostics
     import talk_doctor
     import talk_gemini_realtime
     import talk_grok_auth
     import talk_grok_realtime
     import talk_host
+    import talk_host_duplex
     import talk_identity
     import talk_lifecycle
     import talk_local_realtime
@@ -664,7 +668,7 @@ class HostExecutionRelay:
             # cannot diverge.
             name = _event_tool_name(event)
             denial = self.tool_authorizer(name, event)
-            if denial is None:
+            if denial is None and not talk_host_duplex.canonical(self.attachment):
                 # WHO may act is settled; WHAT may run on this thread is a
                 # separate, transport-independent question.
                 denial = _host_tool_classification_denial(name, event)
@@ -680,6 +684,15 @@ class HostExecutionRelay:
             if type(arguments) is not dict or not response_id or not item_id:
                 outputs[position] = self._output(call_id, HOST_TOOL_ARGUMENT_ERROR)
                 continue
+            speaker = {}
+            if talk_host_duplex.canonical(self.attachment):
+                binding = event.get(talk_operator_auth.TRUSTED_BINDING_EVENT_KEY)
+                speaker = {'speaker_user_id': getattr(binding, 'user_id', None),
+                           'input_item_id': getattr(binding, 'input_item_id', None)}
+                if speaker['speaker_user_id'] is None:
+                    outputs[position] = self._output(
+                        call_id, 'Missing authenticated voice speaker.')
+                    continue
             permits.append(
                 self.attachment.mint_tool_call_permit(
                     response_id=response_id,
@@ -688,12 +701,21 @@ class HostExecutionRelay:
                     batch_id=batch_id,
                     tool_name=event["name"],
                     arguments=arguments,
+                    **speaker,
                 )
             )
             permitted_positions.append(position)
 
         if permits:
-            results = await self.attachment.execute_tool_batch(tuple(permits))
+            try:
+                results = await self.attachment.execute_tool_batch(tuple(permits))
+            except (RuntimeError, PermissionError, TimeoutError) as exc:
+                if not talk_host_duplex.canonical(self.attachment):
+                    raise
+                detail = (f'Hermes could not confirm execution ({type(exc).__name__}). '
+                          'Do not claim success or retry an uncertain operation automatically.')
+                results = [{'call_id': events[p]['call_id'], 'output': detail}
+                           for p in permitted_positions]
             by_call_id = {result["call_id"]: result["output"] for result in results}
             for position in permitted_positions:
                 call_id = events[position]["call_id"]
@@ -1653,10 +1675,19 @@ async def run_talk_session(
         talk_host.host().identity_sections(),
         tools=tools,
         host_execution=host_execution_attachment is not None,
+        canonical_history=talk_host_duplex.canonical(host_execution_attachment),
+        trusted_room=(talk_host_duplex.canonical(host_execution_attachment)
+                      and getattr(host_execution_attachment, 'trusted_room', False)),
+        approvals_disabled=(talk_host_duplex.canonical(host_execution_attachment)
+                            and getattr(host_execution_attachment, 'approvals_disabled', False)),
         lane=lane,
         host_summary=_host_summary_line() if lane == "cli" else None,
         capabilities=talk_capabilities.instruction_section(catalog_snapshot),
     )
+    context_sync = (talk_conversation_sync.ConversationSync(host_execution_attachment)
+                    if talk_conversation_sync.supported(host_execution_attachment) else None)
+    if context_sync is not None:
+        instructions += talk_conversation_sync.INSTRUCTIONS
 
     # Find out NOW whether the api_server lane is up. The verdict is needed by
     # the first tool call; warming it before then avoids spending that tool's
@@ -1676,10 +1707,19 @@ async def run_talk_session(
         talk_operator_auth.DiscordToolAuthorizationLedger(
             # xAI's response.created never echoes the metadata we send.
             echoes_response_metadata=provider != "grok",
+            trusted_room_owner=(host_execution_attachment.operator_user_id
+                if talk_host_duplex.canonical(host_execution_attachment)
+                and getattr(host_execution_attachment, 'trusted_room', False) else None),
+            canonical_speaker_allowed=(host_execution_attachment.admits_speaker
+                if talk_host_duplex.canonical(host_execution_attachment) else None),
         )
         if discord_authorization
         else None
     )
+    host_projection = None
+    if talk_host_duplex.canonical(host_execution_attachment) and authorization_ledger is not None:
+        host_projection = talk_host_duplex.HostDuplexProjection(
+            host_execution_attachment, authorization_ledger)
     # ENFORCED, not documented: `authorization_ledger is None` has to mean
     # "this transport declared no remote speakers". It holds by construction
     # three lines up, but the place that RELIES on it is the tool-authorizer
@@ -1801,6 +1841,15 @@ async def run_talk_session(
     try:
         session = (session_factory or _realtime_session)(auth)
         await session.connect(setup)
+        if context_sync is not None:
+            await context_sync.start(session.send)
+        elif talk_host_duplex.canonical(host_execution_attachment):
+            history = host_execution_attachment.initial_history()
+            if history:
+                await session.send(tuple(talk_realtime.ReplayConversationMessage(
+                    item_id=f"hermes-history-{index}",
+                    role=talk_realtime.TranscriptRole(row['role']),
+                    text=row['content']) for index, row in enumerate(history)))
     except asyncio.CancelledError:
         if session is not None:
             with suppress(Exception):
@@ -1849,6 +1898,11 @@ async def run_talk_session(
                 watched.add(run_id)
                 watchers.append(asyncio.create_task(watch_run(run_id)))
 
+        def announcement_busy():
+            return (relay.response_active or continuation_pending or speaker_busy()
+                    or (context_sync is not None
+                        and (context_sync.speaking or context_sync.input_pending)))
+
         async def send_outgoing(outgoing, *, is_announcement: bool = False) -> bool:
             """Serialize every provider write; keep multi-command batches contiguous.
 
@@ -1871,16 +1925,20 @@ async def run_talk_session(
                 # pump_announcements decides "the model is idle" BEFORE queuing
                 # for this lock, and a response can start while it waits there.
                 # Re-check at the point the write actually happens.
-                if is_announcement and (
-                    relay.response_active or continuation_pending or speaker_busy()
-                ):
+                if is_announcement and announcement_busy():
                     return False
                 if any(
                     isinstance(command, talk_realtime.StartResponse)
                     for command in commands
                 ):
+                    if context_sync is not None:
+                        await context_sync.flush(session.send)
+                        if is_announcement and announcement_busy():
+                            return False
                     continuation_pending = True
                 await session.send(commands)
+                if context_sync is not None:
+                    context_sync.response_sent(commands)
             start_watchers(commands)
             return True
 
@@ -1916,6 +1974,8 @@ async def run_talk_session(
                 if chunk is None:
                     await asyncio.sleep(IDLE_POLL_S)
                     continue
+                if host_projection is not None:
+                    speaker, chunk = host_projection.filter_audio(speaker, chunk)
                 if authorization_ledger is not None:
                     authorization_ledger.record_packet(speaker, chunk)
                 await send_outgoing(packet_lane.commands(speaker, chunk))
@@ -2000,6 +2060,8 @@ async def run_talk_session(
         async def receive_events() -> None:
             nonlocal continuation_pending, spoken_item
             async for event in session:
+                if context_sync is not None:
+                    context_sync.observe(event)
                 if isinstance(event, talk_realtime.SessionTerminated):
                     if event.state is talk_realtime.SessionState.FAILED:
                         raise talk_realtime.RealtimeSessionError(
@@ -2051,6 +2113,8 @@ async def run_talk_session(
                 if isinstance(event, talk_realtime.ProviderFailure) and event.terminal:
                     relay.handle_realtime_event(event)
                     raise talk_realtime.RealtimeSessionError(event.detail)
+                if host_projection is not None:
+                    host_projection.observe(event)
                 if isinstance(event, talk_realtime.ResponseStarted):
                     continuation_pending = False
                 if isinstance(event, talk_realtime.FunctionCall):
@@ -2272,15 +2336,29 @@ async def run_talk_session(
         )
         tool_worker = asyncio.create_task(tool_coordinator.run())
         receiver = asyncio.create_task(receive_events())
+        async def flush_context():
+            async with send_lock:
+                await context_sync.flush(session.send)
+
+        def context_busy():
+            return (relay.response_active or continuation_pending or bool(tool_coordinator.outputs)
+                    or speaker_busy() or context_sync.speaking or context_sync.input_pending)
+
+        context_worker = (asyncio.create_task(
+            context_sync.run(flush_context, send_outgoing, context_busy))
+            if context_sync is not None else None)
         drain = None
         try:
             done, _pending_tasks = await asyncio.wait(
-                {sender, pump, receiver, tool_worker},
+                {sender, pump, receiver, tool_worker,
+                 *([context_worker] if context_worker else [])},
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if sender in done:
                 await sender
                 raise RuntimeError("microphone sender stopped unexpectedly")
+            if context_worker in done:
+                await context_worker
             if tool_worker in done:
                 await tool_worker
             if pump in done:
@@ -2311,6 +2389,8 @@ async def run_talk_session(
             sender.cancel()
             pump.cancel()
             receiver.cancel()
+            if context_worker is not None:
+                context_worker.cancel()
             if drain is not None:
                 drain.cancel()
             for watcher in watchers:
@@ -2324,6 +2404,7 @@ async def run_talk_session(
                 stop_ack,
                 *([drain] if drain is not None else []),
                 *watchers,
+                *([context_worker] if context_worker is not None else []),
             }
             done, pending_cleanup = await asyncio.wait(
                 cleanup_tasks,

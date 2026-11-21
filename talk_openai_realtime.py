@@ -115,6 +115,14 @@ def encode_command(command: rt.RealtimeCommand) -> dict[str, Any]:
             "type": "input_audio_buffer.append",
             "audio": base64.b64encode(command.data).decode("ascii"),
         }
+    if isinstance(command, rt.ReplayConversationMessage):
+        content_type = "input_text" if command.role == rt.TranscriptRole.USER else "output_text"
+        request = ({'event_id': command.item_id}
+                   if command.item_id.startswith('hermes-context-') else {})
+        return {"type": "conversation.item.create", **request, "item": {
+            "id": command.item_id, "type": "message", "role": command.role.value,
+            "content": [{"type": content_type,
+                         "text": command.text}]}}
     if isinstance(command, (rt.AddContext, rt.AddInputText)):
         return {
             "type": "conversation.item.create",
@@ -312,7 +320,8 @@ def decode_event(event: dict[str, Any]) -> rt.RealtimeEvent | None:
                 detail = str(error.get("message") or error.get("type") or "")
             else:
                 detail = str(error or "")
-            return rt.ProviderFailure(detail=detail or "Provider reported a session error")
+            return rt.ProviderFailure(detail=detail or "Provider reported a session error",
+                request_id=error.get('event_id') if isinstance(error, dict) else None)
     except ValueError as exc:
         return _protocol_failure(exc)
     return None
@@ -394,7 +403,7 @@ class _OpenAIWireSession:
         stack = AsyncExitStack()
         try:
             try:
-                descriptor = self._mint_session(
+                descriptor = await asyncio.to_thread(self._mint_session,
                     model=model,
                     voice=voice,
                     instructions=instructions,

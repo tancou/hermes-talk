@@ -792,6 +792,13 @@ token, or writes an auth store.
 
 ## Discord voice — talking in the channel Hermes is already in
 
+For hosts implementing continuous STT ingress, see
+[canonical Discord voice](CANONICAL-DISCORD.md): `/talk join` uses the native
+Hermes session, with an optional restricted-room speaker-policy switch.
+With `conversation_sync_version == 1`, completed background results and new
+Discord text also enter the active voice context. Context catches up before
+each response; an announcement waits until the user and playback are idle.
+
 The following describes the legacy voice lane. Task-bound GPT-Live uses the
 [Discord commands and audience checks](GPT-LIVE.md#discord) in the Live guide.
 

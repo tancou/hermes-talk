@@ -338,8 +338,10 @@ class ProviderFailure(RealtimeEvent):
     detail: str
     terminal: bool = False
     response_metadata: Mapping[str, str] = field(default_factory=dict)
+    request_id: str | None = None
 
     def __post_init__(self) -> None:
+        _identifier(self.request_id, 'request_id', optional=True)
         object.__setattr__(
             self, "response_metadata", _frozen_mapping(self.response_metadata)
         )
@@ -373,6 +375,21 @@ class AddInputText(RealtimeCommand):
         _identifier(self.item_id, "item_id")
         if not isinstance(self.text, str) or not self.text.strip() or len(self.text) > 65536:
             raise ValueError("Input text must be bounded original user text")
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayConversationMessage(RealtimeCommand):
+    """Bounded historical conversation data, never a system instruction."""
+    item_id: str
+    role: TranscriptRole
+    text: str
+
+    def __post_init__(self) -> None:
+        _identifier(self.item_id, "item_id")
+        if not isinstance(self.role, TranscriptRole):
+            raise ValueError("History must retain its user or assistant role")
+        if not isinstance(self.text, str) or not 0 < len(self.text) <= 32000:
+            raise ValueError("Historical message must be bounded text")
 
 
 @dataclass(frozen=True, slots=True)
@@ -522,6 +539,7 @@ __all__ = [
     "RealtimeTurnDetection",
     "RealtimeTurnDetectionMode",
     "RemoveContext",
+    "ReplayConversationMessage",
     "ResponseFinished",
     "ResponseStarted",
     "SessionReady",

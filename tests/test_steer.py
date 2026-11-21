@@ -28,7 +28,7 @@ import talk_tools
 
 
 @pytest.fixture(autouse=True)
-def _clean(monkeypatch, tmp_path):
+def _clean(monkeypatch, tmp_path, run_workers):
     talk_host.bind_ctx(None)
     talk_runs.reset_for_tests()
     talk_steer.reset_for_tests()
@@ -42,10 +42,14 @@ def _clean(monkeypatch, tmp_path):
         operator="test",
         profile=None,
     )
-    yield
-    talk_host.bind_ctx(None)
-    talk_runs.reset_for_tests()
-    talk_steer.reset_for_tests()
+    try:
+        yield
+    finally:
+        # Workers retain registry IDs and patched dependencies through their terminal write.
+        run_workers.join_all()
+        talk_host.bind_ctx(None)
+        talk_runs.reset_for_tests()
+        talk_steer.reset_for_tests()
 
 
 class _FakeAgent:
@@ -92,12 +96,38 @@ def _install_host(
     return module
 
 
-def _running_run(lane: str | None = None, **meta) -> tuple[int, threading.Event]:
+def _running_run(run_workers, lane: str | None = None, **meta) -> tuple[int, threading.Event]:
     hung = threading.Event()
+    run_workers.release_on_exit(hung)
     run_id = talk_runs.start_run("agent", "audit", lambda _rid: hung.wait(5) or "x")
     if lane:
         talk_runs.annotate_run(run_id, lane=lane, **meta)
     return run_id, hung
+
+
+@pytest.mark.parametrize("assertion_failed", [False, True])
+def test_cleanup_joins_real_workers_before_reset(monkeypatch, tmp_path, run_workers,
+                                                assertion_failed):
+    """Even a failed assertion must drain the old generation before IDs are reused."""
+    finished = []
+    original = talk_runs.finish_run
+
+    def finish(run_id, *args, **kwargs):
+        finished.append(talk_runs.get_run(run_id)["status"])
+        return original(run_id, *args, **kwargs)
+
+    monkeypatch.setattr(talk_runs, "finish_run", finish)
+    cleanup = _clean.__wrapped__(monkeypatch, tmp_path, run_workers)
+    next(cleanup)
+    _running_run(run_workers, talk_host.LANE_API_SERVER)
+    if assertion_failed:
+        with pytest.raises(AssertionError, match="synthetic"):
+            cleanup.throw(AssertionError("synthetic failed assertion"))
+    else:
+        cleanup.close()
+    assert finished == ["running"]
+    assert all(not worker.is_alive() for worker in run_workers.threads)
+    assert talk_runs.list_runs() == []
 
 
 # -- argument guards ----------------------------------------------------------
@@ -118,8 +148,8 @@ def test_tool_layer_requires_agent_id_and_text():
 # -- run numbers: lanes that cannot steer -------------------------------------
 
 
-def test_api_server_run_refuses_and_offers_a_real_stop():
-    run_id, hung = _running_run(talk_host.LANE_API_SERVER)
+def test_api_server_run_refuses_and_offers_a_real_stop(run_workers):
+    run_id, hung = _running_run(run_workers, talk_host.LANE_API_SERVER)
     try:
         out = talk_host.host().steer_agent(str(run_id), "focus on pricing")
     finally:
@@ -127,8 +157,8 @@ def test_api_server_run_refuses_and_offers_a_real_stop():
     assert "api server" in out.lower() and "stopping it" in out.lower()
 
 
-def test_detached_run_refuses_and_offers_a_real_stop():
-    run_id, hung = _running_run()
+def test_detached_run_refuses_and_offers_a_real_stop(run_workers):
+    run_id, hung = _running_run(run_workers)
     try:
         out = talk_host.host().steer_agent(str(run_id), "focus on pricing")
     finally:
@@ -253,10 +283,10 @@ def test_bridge_wrong_registry_shape_refuses(monkeypatch):
 # -- stop_work ----------------------------------------------------------------
 
 
-def test_stop_api_server_run_uses_the_remote_id(monkeypatch):
+def test_stop_api_server_run_uses_the_remote_id(monkeypatch, run_workers):
     stopped = []
     monkeypatch.setattr(talk_apiserver, "stop_run", lambda rid: stopped.append(rid))
-    run_id, hung = _running_run(talk_host.LANE_API_SERVER, api_run_id="run-777")
+    run_id, hung = _running_run(run_workers, talk_host.LANE_API_SERVER, api_run_id="run-777")
     try:
         out = talk_host.host().stop_work(str(run_id))
     finally:
@@ -267,13 +297,13 @@ def test_stop_api_server_run_uses_the_remote_id(monkeypatch):
     assert not out.lower().startswith("stopped")
 
 
-def test_stop_api_server_run_without_remote_id_refuses(monkeypatch):
+def test_stop_api_server_run_without_remote_id_refuses(monkeypatch, run_workers):
     monkeypatch.setattr(
         talk_apiserver,
         "stop_run",
         lambda rid: (_ for _ in ()).throw(AssertionError("must not be called")),
     )
-    run_id, hung = _running_run(talk_host.LANE_API_SERVER)
+    run_id, hung = _running_run(run_workers, talk_host.LANE_API_SERVER)
     try:
         out = talk_host.host().stop_work(str(run_id))
     finally:
@@ -281,8 +311,8 @@ def test_stop_api_server_run_without_remote_id_refuses(monkeypatch):
     assert "never told me its run id" in out.lower()
 
 
-def test_stop_detached_run_terminates_the_retained_handle():
-    run_id, hung = _running_run()
+def test_stop_detached_run_terminates_the_retained_handle(run_workers):
+    run_id, hung = _running_run(run_workers)
 
     class _Proc:
         def __init__(self):
@@ -304,8 +334,8 @@ def test_stop_detached_run_terminates_the_retained_handle():
     assert "sent the stop" in out.lower()
 
 
-def test_stop_detached_run_without_handle_refuses():
-    run_id, hung = _running_run()
+def test_stop_detached_run_without_handle_refuses(run_workers):
+    run_id, hung = _running_run(run_workers)
     try:
         out = talk_host.host().stop_work(str(run_id))
     finally:
@@ -336,9 +366,9 @@ def _poll_stop_receipt(run_id: int, expected_fragment: str, timeout: float = 3.0
     raise AssertionError(f"stop receipt never carried {expected_fragment!r}")
 
 
-def test_stop_api_run_fast_path_annotates_the_receipt(monkeypatch):
+def test_stop_api_run_fast_path_annotates_the_receipt(monkeypatch, run_workers):
     monkeypatch.setattr(talk_apiserver, "stop_run", lambda rid: None)
-    run_id, hung = _running_run(talk_host.LANE_API_SERVER, api_run_id="run-777")
+    run_id, hung = _running_run(run_workers, talk_host.LANE_API_SERVER, api_run_id="run-777")
     try:
         out = talk_host.host().stop_work(str(run_id))
     finally:
@@ -347,7 +377,7 @@ def test_stop_api_run_fast_path_annotates_the_receipt(monkeypatch):
     assert _poll_stop_receipt(run_id, "accepted") == "accepted"
 
 
-def test_stop_api_run_slow_server_detaches_then_receipts(monkeypatch):
+def test_stop_api_run_slow_server_detaches_then_receipts(monkeypatch, run_workers):
     # hermes-talk#2: the POST must not dead-air the voice loop. A server
     # slower than the courtesy wait gets honest detached wording, and the
     # receipt lands in the run's meta when the answer finally arrives.
@@ -358,7 +388,7 @@ def test_stop_api_run_slow_server_detaches_then_receipts(monkeypatch):
 
     monkeypatch.setattr(talk_apiserver, "stop_run", slow_stop)
     monkeypatch.setattr(talk_host, "STOP_CONFIRM_WAIT_S", 0.05)
-    run_id, hung = _running_run(talk_host.LANE_API_SERVER, api_run_id="run-777")
+    run_id, hung = _running_run(run_workers, talk_host.LANE_API_SERVER, api_run_id="run-777")
     try:
         out = talk_host.host().stop_work(str(run_id))
         assert "hasn't answered yet" in out.lower()
@@ -369,12 +399,12 @@ def test_stop_api_run_slow_server_detaches_then_receipts(monkeypatch):
         hung.set()
 
 
-def test_stop_api_run_error_within_the_window_is_spoken(monkeypatch):
+def test_stop_api_run_error_within_the_window_is_spoken(monkeypatch, run_workers):
     def failing(_rid):
         raise talk_apiserver.TalkApiServerError("boom")
 
     monkeypatch.setattr(talk_apiserver, "stop_run", failing)
-    run_id, hung = _running_run(talk_host.LANE_API_SERVER, api_run_id="run-777")
+    run_id, hung = _running_run(run_workers, talk_host.LANE_API_SERVER, api_run_id="run-777")
     try:
         out = talk_host.host().stop_work(str(run_id))
     finally:
@@ -396,8 +426,8 @@ class _DyingProc:
         self._code = 0
 
 
-def test_stop_detached_confirms_the_death_within_budget():
-    run_id, hung = _running_run()
+def test_stop_detached_confirms_the_death_within_budget(run_workers):
+    run_id, hung = _running_run(run_workers)
     talk_runs.register_process(run_id, _DyingProc())
     try:
         out = talk_host.host().stop_work(str(run_id))
@@ -409,7 +439,7 @@ def test_stop_detached_confirms_the_death_within_budget():
     assert _poll_stop_receipt(run_id, "exited 0") == "exited 0"
 
 
-def test_stop_detached_undying_child_promises_the_receipt(monkeypatch):
+def test_stop_detached_undying_child_promises_the_receipt(monkeypatch, run_workers):
     monkeypatch.setattr(talk_host, "STOP_CONFIRM_WAIT_S", 0.05)
     monkeypatch.setattr(talk_host, "STOP_LATE_CONFIRM_S", 0.05)
 
@@ -420,7 +450,7 @@ def test_stop_detached_undying_child_promises_the_receipt(monkeypatch):
         def terminate(self):
             pass
 
-    run_id, hung = _running_run()
+    run_id, hung = _running_run(run_workers)
     talk_runs.register_process(run_id, _Undying())
     try:
         out = talk_host.host().stop_work(str(run_id))
@@ -433,12 +463,12 @@ def test_stop_detached_undying_child_promises_the_receipt(monkeypatch):
         hung.set()
 
 
-def test_stop_detached_survives_the_worker_reaping_first():
+def test_stop_detached_survives_the_worker_reaping_first(run_workers):
     # Codex v0.6.1 finding 2 repro: the run worker reaps the child and
     # RELEASES the registry handle between terminate and confirm. The
     # captured handle still answers poll(), so the receipt is the truth
     # ("exited 0"), never "never confirmed dead" for a child that died.
-    run_id, hung = _running_run()
+    run_id, hung = _running_run(run_workers)
 
     class _ReapedProc:
         def __init__(self):
@@ -463,7 +493,7 @@ def test_stop_detached_survives_the_worker_reaping_first():
     assert _poll_stop_receipt(run_id, "exited 0") == "exited 0"
 
 
-def test_stop_confirm_consults_the_run_record_before_claiming_uncertainty(monkeypatch):
+def test_stop_confirm_consults_the_run_record_before_claiming_uncertainty(monkeypatch, run_workers):
     # The handle never shows an exit code, but the RUN finishes anyway —
     # the late confirm must report the terminal record, not uncertainty.
     monkeypatch.setattr(talk_host, "STOP_CONFIRM_WAIT_S", 0.05)
@@ -476,7 +506,7 @@ def test_stop_confirm_consults_the_run_record_before_claiming_uncertainty(monkey
         def terminate(self):
             pass
 
-    run_id, hung = _running_run()
+    run_id, hung = _running_run(run_workers)
     talk_runs.register_process(run_id, _Undying())
     try:
         out = talk_host.host().stop_work(str(run_id))
@@ -486,8 +516,8 @@ def test_stop_confirm_consults_the_run_record_before_claiming_uncertainty(monkey
     assert "run finished as done" in _poll_stop_receipt(run_id, "run finished as")
 
 
-def test_check_work_speaks_the_stop_receipt(monkeypatch):
-    run_id, hung = _running_run()
+def test_check_work_speaks_the_stop_receipt(monkeypatch, run_workers):
+    run_id, hung = _running_run(run_workers)
     try:
         talk_runs.annotate_run(run_id, stop_result="accepted")
         _install_host(monkeypatch, {})
@@ -512,7 +542,7 @@ def test_stop_without_host_module_refuses(monkeypatch):
 # -- list_agents --------------------------------------------------------------
 
 
-def test_list_agents_merges_children_and_runs_with_capability_tags(monkeypatch):
+def test_list_agents_merges_children_and_runs_with_capability_tags(monkeypatch, run_workers):
     _install_host(
         monkeypatch,
         list_children=lambda: [
@@ -524,7 +554,7 @@ def test_list_agents_merges_children_and_runs_with_capability_tags(monkeypatch):
             }
         ],
     )
-    run_id, hung = _running_run(talk_host.LANE_API_SERVER)
+    run_id, hung = _running_run(run_workers, talk_host.LANE_API_SERVER)
     try:
         out = talk_host.host().list_agents()
     finally:
@@ -573,8 +603,8 @@ def test_redirect_empty_text_is_refused():
     assert "the correction itself" in out.lower()
 
 
-def test_redirect_run_number_refuses_with_lane_wording():
-    run_id, hung = _running_run(talk_host.LANE_API_SERVER)
+def test_redirect_run_number_refuses_with_lane_wording(run_workers):
+    run_id, hung = _running_run(run_workers, talk_host.LANE_API_SERVER)
     try:
         out = talk_host.host().redirect_agent(str(run_id), "wrong repo")
     finally:

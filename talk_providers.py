@@ -143,6 +143,17 @@ class OpenAITranscriptionProvider(_STTBase):  # type: ignore[misc,valid-type]
         return PROVIDER_NAME
 
     @property
+    def continuous_capable(self) -> bool:
+        return hasattr(_STTBase, "open_continuous_session")
+
+    async def open_continuous_session(self):
+        try:
+            from .talk_continuous_stt import TalkContinuousSTT
+        except ImportError:
+            from talk_continuous_stt import TalkContinuousSTT
+        return await TalkContinuousSTT.open()
+
+    @property
     def display_name(self) -> str:
         return "OpenAI (hermes-talk)"
 
