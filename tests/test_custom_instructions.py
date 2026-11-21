@@ -4,6 +4,15 @@ import pytest
 import talk_identity as identity
 
 
+def test_deployment_preferences_preserve_delegated_tool_contract():
+    identity.TALK_INSTRUCTIONS_PATH.write_text("Keep spoken answers concise.", encoding="utf-8")
+    prompt = identity.build_instructions({"USER": "Operator identity"}, delegated_work=True)
+    assert "Keep spoken answers concise." in prompt
+    assert "Operator identity" in prompt
+    assert "submit_task" in prompt and "submission_status" in prompt
+    assert "delegate_task" not in prompt
+
+
 @pytest.mark.parametrize("build", [identity.build_instructions, identity.build_live_instructions])
 def test_optional_instructions_reload_without_replacing_host_contract(build, caplog):
     baseline = build({"USER": "Operator identity"})
