@@ -1699,23 +1699,30 @@ async def run_talk_session(
     catalog_snapshot = talk_capabilities.wait_until_warm(
         talk_config.catalog_startup_wait_s()
     )
-    instructions = talk_identity.build_instructions(
-        talk_host.host().identity_sections(),
-        tools=tools,
-        host_execution=host_execution_attachment is not None,
-        canonical_history=talk_host_duplex.canonical(host_execution_attachment),
-        trusted_room=(talk_host_duplex.canonical(host_execution_attachment)
-                      and getattr(host_execution_attachment, 'trusted_room', False)),
-        approvals_disabled=(talk_host_duplex.canonical(host_execution_attachment)
-                            and getattr(host_execution_attachment, 'approvals_disabled', False)),
-        lane=lane,
-        host_summary=_host_summary_line() if lane == "cli" else None,
-        capabilities=talk_capabilities.instruction_section(catalog_snapshot),
-        reply_language=talk_config.reply_language(),
-        # `/talk core join` exists only on the Discord gateway, and only on a
-        # host carrying the core voice contract (hermes-talk#215).
-        core_join=lane == "discord" and talk_core_realtime.core_provider_available(),
-    )
+    try:
+        instructions = talk_identity.build_instructions(
+            talk_host.host().identity_sections(),
+            tools=tools,
+            host_execution=host_execution_attachment is not None,
+            canonical_history=talk_host_duplex.canonical(host_execution_attachment),
+            trusted_room=(talk_host_duplex.canonical(host_execution_attachment)
+                          and getattr(host_execution_attachment, 'trusted_room', False)),
+            approvals_disabled=(talk_host_duplex.canonical(host_execution_attachment)
+                and getattr(host_execution_attachment, 'approvals_disabled', False)),
+            lane=lane,
+            host_summary=_host_summary_line() if lane == "cli" else None,
+            capabilities=talk_capabilities.instruction_section(catalog_snapshot),
+            reply_language=talk_config.reply_language(),
+            # `/talk core join` exists only on the Discord gateway, and only on a
+            # host carrying the core voice contract (hermes-talk#215).
+            core_join=lane == "discord" and talk_core_realtime.core_provider_available(),
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"talk: voice instructions could not be loaded ({type(exc).__name__})",
+              file=sys.stderr)
+        if host_execution_attachment is not None:
+            host_execution_attachment.close()
+        return refuse(STARTUP_REFUSAL_CONFIGURATION)
     context_sync = (talk_conversation_sync.ConversationSync(host_execution_attachment)
                     if talk_conversation_sync.supported(host_execution_attachment) else None)
     if context_sync is not None:

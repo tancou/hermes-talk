@@ -14,6 +14,9 @@ named rather than smoothed.
 ## [Unreleased]
 
 ### Added
+- Git deployments can version optional `TALK.md` voice preferences in their
+  plugin branch. New Realtime and GPT-Live sessions load the bounded UTF-8 file
+  alongside the existing host contracts and identity sections.
 - Discord canonical Realtime duplex and continuous transcription on compatible
   Hermes hosts, with invocation-bound transport and speaker authorization.
   See [docs/CANONICAL-DISCORD.md](docs/CANONICAL-DISCORD.md). Contributed by @tancou.
