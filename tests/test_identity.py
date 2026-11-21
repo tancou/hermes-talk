@@ -219,7 +219,8 @@ def test_core_join_is_offered_only_when_the_caller_says_it_can_run():
         None, lane="discord", core_join=True
     )
     # The task and host-tool lanes carry their own contracts and never point there.
-    for kwargs in ({"canonical_task": True}, {"host_execution": True}):
+    for kwargs in ({"canonical_task": True}, {"host_execution": True},
+                   {"canonical_history": True}):
         built = talk_identity.build_instructions(None, core_join=True, **kwargs)
         assert "core join" not in built.lower()
 
