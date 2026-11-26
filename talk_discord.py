@@ -798,6 +798,17 @@ class DiscordAudio:
         self._native_guard = None
         self._native_admission = None
 
+    def follow_delegation(self, binding, payload, task):
+        try:
+            from .talk_discord_threads import start_followup
+        except ImportError:
+            from talk_discord_threads import start_followup
+        with self._lifecycle_lock:
+            bridge = self._bridge
+            if bridge is None or bridge["guild_id"] != binding.guild_id:
+                return {"status": "unavailable"}
+            return start_followup(bridge["adapter"], binding, payload, task)
+
     def bind_native_surface(self, proof):
         """Bind only a host-verified room snapshot; membership changes revoke playback."""
         try:

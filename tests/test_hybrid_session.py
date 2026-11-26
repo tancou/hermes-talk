@@ -58,6 +58,8 @@ def test_hybrid_session_loads_catalog_and_dispatches_only_joining_speaker(
     fake, audio = ProviderUntilToolsFinish(), Audio()
     audio.discord_speaker_authorization = True
     catalog_reads, executions = [], []
+    follows = []
+    audio.follow_delegation = lambda *args: follows.append(args) or {"status": "starting"}
     owner_loop = None
 
     async def stored_catalog():
@@ -75,11 +77,14 @@ def test_hybrid_session_loads_catalog_and_dispatches_only_joining_speaker(
 
     def execute(**request):
         executions.append(request)
+        output = json.dumps({
+            "status": "dispatched", "mode": "background", "subagent_ids": ["child-1"],
+        }) if request["require_background"] else "native result"
         return {
             "ok": True,
             "status": "terminal",
             "request_id": request["request_id"],
-            "outputs": [{"call_id": request["calls"][0]["call_id"], "output": "native result"}],
+            "outputs": [{"call_id": request["calls"][0]["call_id"], "output": output}],
         }
 
     real_ledger = talk_operator_auth.DiscordToolAuthorizationLedger
@@ -154,8 +159,11 @@ def test_hybrid_session_loads_catalog_and_dispatches_only_joining_speaker(
             for request in executions
         )
         assert executions[1]["calls"][0]["arguments"]["tasks"][0]["goal"] == "Run the backend tests"
+        assert len(follows) == 1 and follows[0][2] == "Run the backend tests"
+        assert outputs[1]["thread_followup"] == {"status": "starting"}
     else:
         assert executions == []
+        assert follows == []
 
 
 def test_hybrid_catalog_refusal_stops_before_provider_connection():

@@ -31,6 +31,40 @@ parent turn; they can run while native background children work. A slow direct
 tool can occupy the parent too: the prompt asks the model to delegate code changes,
 investigations and test suites, but it cannot predict every tool's duration.
 The voice call remains duplex while host requests are pending.
+
+### Discord delegation follow-up threads
+
+In this experimental branch, a confirmed `delegate_work` launch starts one
+read-only thread under the initiating text channel. Its starter message links
+to the thread through Discord's native thread UI. The thread contains the task,
+the child's Hermes session ID, stored assistant messages, tool calls/results,
+and the final stored response followed by the session's recorded end reason.
+It observes the existing child; it never opens another agent conversation or
+forwards thread replies to that child. Use Talk's existing controls to steer/stop.
+
+The receiving bot needs View Channel, Send Messages, Create Public Threads and
+Send Messages in Threads permissions. Only the original server text channel is
+eligible: there is no fallback from a private thread, DM or forum to a broader
+channel. The initiating user's channel visibility is checked before each send.
+Child ownership is checked against the captured profile and parent conversation.
+System prompts, injected user context and reasoning fields are omitted; output is
+secret-redacted before shortening and mentions are neutralized. Long entries are
+abridged; the stored Hermes transcript remains the detailed source.
+
+The tool's `thread_followup` receipt distinguishes `starting`, `active`, `ended`,
+`unavailable` and `stopped`; it includes the link once creation is confirmed.
+These are mirror states, not child execution outcomes. Failed Discord delivery
+does not repeat native work, stop the child, or block voice. Ambiguous sends and
+thread creation are not retried automatically.
+
+Followers continue after leaving Talk, but are limited to 16 active children per
+gateway process and 24 hours each. Child storage may take up to 30 seconds to
+appear. Gateway restart does not restore followers, and transcript rotation or
+rewrite stops a follower instead of silently replaying another segment. Only
+explicit hybrid `delegate_work` launches observed in this call are mirrored;
+children launched inside `submit_task`, nested fan-out and historical tasks are
+not automatically adopted. The host's existing private child-session ownership
+helper and Discord bridge remain compatibility requirements.
 Catalog, execution and control waits use dedicated workers so they cannot occupy
 the gateway's default pool while waiting for that same pool to read or admit work.
 

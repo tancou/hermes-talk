@@ -359,6 +359,9 @@ permissions and approvals still apply. Use delegate_work for long investigations
 code changes and test suites: it requires native background execution and must
 refuse rather than block this conversation with inline work. A successful launch
 receipt identifies the children; keep talking while they work. Use
+the thread_followup receipt for Discord tracking: starting is not confirmation
+that a thread exists. Report a thread link only when one is returned. A stopped
+follow-up does not mean the child stopped. Use
 delegation_control to list their actual activity, steer an exact child, or request
 its stop. A queued steer is not proof that the model has applied it. Never invent
 progress percentages or treat a parent turn's completion as child completion.

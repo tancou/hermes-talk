@@ -90,12 +90,14 @@ def tools(catalog):
 class HybridRelay(talk_delegated.SubmissionRelay):
     """Keep controls outside the conversation queue and bound to observed execution."""
 
-    def __init__(self, binding, authorizer, catalog=()):
+    def __init__(self, binding, authorizer, catalog=(), follow_delegation=None):
         super().__init__(binding, authorizer)
         self.observed = {}
         self.control_attempts = {}
         self.host_names = {(schema.get("function", schema)).get("name") for schema in catalog}
         self.direct_requests = {}
+        self.follow_delegation = follow_delegation
+        self.thread_followups = {}
 
     async def status(self, request_id):
         if request_id in self.direct_requests:
@@ -104,6 +106,21 @@ class HybridRelay(talk_delegated.SubmissionRelay):
                 **self.direct_requests[request_id],
             )
             if receipt.get("outputs"):
+                request = self.direct_requests[request_id]
+                if receipt.get("ok") and request["require_background"] and self.follow_delegation:
+                    if request_id not in self.thread_followups:
+                        self.thread_followups[request_id] = {"status": "unavailable"}
+                        try:
+                            call = request["calls"][0]
+                            output = next(row["output"] for row in receipt["outputs"]
+                                          if row.get("call_id") == call["call_id"])
+                            payload = json.loads(output) if isinstance(output, str) else output
+                            self.thread_followups[request_id] = self.follow_delegation(
+                                self.binding, payload, call["arguments"]["tasks"][0]["goal"],
+                            )
+                        except Exception:  # noqa: BLE001 - mirror failure must not repeat native work
+                            pass
+                    receipt = {**receipt, "thread_followup": self.thread_followups[request_id]}
                 receipt = {
                     **receipt,
                     "result": {

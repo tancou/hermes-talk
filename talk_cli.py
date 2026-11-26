@@ -2079,7 +2079,9 @@ async def run_talk_session(
             (talk_hybrid.HybridRelay
              if delegated_binding.hybrid else talk_delegated.SubmissionRelay)(
                 delegated_binding, authorization_ledger.authorize_tool,
-                **({"catalog": host_catalog} if delegated_binding.hybrid else {}),
+                **({"catalog": host_catalog,
+                    "follow_delegation": getattr(audio, "follow_delegation", None)}
+                   if delegated_binding.hybrid else {}),
             )
             if delegated_binding is not None else None
         )

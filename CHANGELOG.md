@@ -20,6 +20,10 @@ named rather than smoothed.
   Contributed by @tancou.
 
 ### Added
+- Experimental hybrid delegation follow-up threads mirror the owned child's
+  stored assistant/tool messages and final response in the originating Discord
+  text channel. Voice and child controls stay independent of mirror delivery.
+  Contributed by @tancou.
 - Experimental `/talk hybrid join` combines short host tool operations with native
   background delegation in the current Discord conversation. Exact submitted turns
   and native children have separate controls; background launch refuses inline
