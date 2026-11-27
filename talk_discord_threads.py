@@ -7,6 +7,11 @@ import json
 import logging
 import time
 
+try:
+    from .talk_delegated import TranscriptReadPending
+except ImportError:
+    from talk_delegated import TranscriptReadPending
+
 _log = logging.getLogger(__name__)
 _TASKS: set[asyncio.Task] = set()
 MAX_FOLLOWERS = 16
@@ -72,16 +77,16 @@ class ChildTranscript:
             with messages.read_snapshot() as snapshot:
                 session_id = stored_child_session(reader, self.child_id, [self.binding.session_id])
                 if session_id is None:
+                    if not snapshot():
+                        raise TranscriptReadPending("Concurrent transcript write")
                     raise LookupError("Child transcript is not available in this conversation")
                 # shortcut: stop on rotation, add lineage-aware paging before following compression.
-                if self.session_id is not None and session_id != self.session_id:
-                    raise RuntimeError("Child transcript rotated; follow-up stopped")
+                rotated = self.session_id is not None and session_id != self.session_id
                 session = reader.sessions.get(session_id)
                 revision = messages.conversation_revision(session_id)
-                if self.cursor_state is not None and messages.transcript_cursor_state(
+                rewritten = self.cursor_state is not None and messages.transcript_cursor_state(
                     session_id, self.cursor, revision.lineage_ids,
-                ) != self.cursor_state:
-                    raise RuntimeError("Child transcript changed; follow-up stopped")
+                ) != self.cursor_state
                 rows = messages.read_transcript(
                     session_id, TranscriptRead(after_id=self.cursor, limit=4),
                 )
@@ -89,7 +94,11 @@ class ChildTranscript:
                 state = messages.transcript_cursor_state(session_id, cursor, revision.lineage_ids)
                 rendered = [text for row in rows if (text := _render(row))]
                 if not snapshot():
-                    raise RuntimeError("Child transcript changed during read")
+                    raise TranscriptReadPending("Concurrent transcript write")
+                if rotated:
+                    raise RuntimeError("Child transcript rotated; follow-up stopped")
+                if rewritten:
+                    raise RuntimeError("Child transcript changed; follow-up stopped")
                 self.session_id, self.cursor, self.cursor_state = session_id, cursor, state
                 ended = None
                 if session.ended_at is not None and not rows:
@@ -139,7 +148,7 @@ async def _follow(adapter, binding, child_id, task, receipt):
             try:
                 rows, ended = await asyncio.to_thread(transcript.read)
                 break
-            except LookupError:
+            except (LookupError, TranscriptReadPending):
                 if attempt == 14:
                     raise
                 await asyncio.sleep(POLL_SECONDS)
@@ -172,7 +181,10 @@ async def _follow(adapter, binding, child_id, task, receipt):
             if time.monotonic() >= deadline:
                 raise TimeoutError("Follow-up time limit reached")
             await asyncio.sleep(POLL_SECONDS)
-            rows, ended = await asyncio.to_thread(transcript.read)
+            try:
+                rows, ended = await asyncio.to_thread(transcript.read)
+            except TranscriptReadPending:
+                rows, ended = [], None
     except asyncio.CancelledError:
         receipt["status"] = "stopped"
         raise

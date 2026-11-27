@@ -112,6 +112,10 @@ class Binding:
         )
 
 
+class TranscriptReadPending(RuntimeError):
+    """A concurrent write invalidated this read; retry without advancing the cursor."""
+
+
 class ConversationTail:
     """Profile-pinned, read-only context; never interprets a row as job completion."""
 
@@ -130,17 +134,15 @@ class ConversationTail:
             messages = reader.messages
             with messages.read_snapshot() as snapshot:
                 revision = messages.conversation_revision(self.binding.session_id)
-                if self.revision is not None and (
+                rotated = self.revision is not None and (
                     revision.lineage_ids != self.revision.lineage_ids
                     or revision.max_active_id < self.cursor
-                ):
-                    raise RuntimeError("Hermes conversation changed; leave and rejoin Talk.")
+                )
                 state = messages.transcript_cursor_state(
                     self.binding.session_id, self.cursor, revision.lineage_ids
                 )
                 refresh = self.cursor_state is not None and state != self.cursor_state
-                if refresh and state[:2] != self.cursor_state[:2]:
-                    raise RuntimeError("Previously delivered Hermes context changed; rejoin Talk.")
+                rewritten = refresh and state[:2] != self.cursor_state[:2]
                 # Native prompt expansion also bumps the revision; replace stale context safely.
                 # Initial context is deliberately bounded; subsequent polls advance by row ID.
                 rows = messages.read_transcript(
@@ -151,17 +153,18 @@ class ConversationTail:
                         else TranscriptRead(after_id=self.cursor, limit=16)
                     ),
                 )
-                self.revision = revision
                 wire = [row.as_wire_row() for row in rows]
-                if wire:
-                    self.cursor = wire[-1]["id"]
-                self.cursor_state = messages.transcript_cursor_state(
-                    self.binding.session_id, self.cursor, revision.lineage_ids
+                cursor = wire[-1]["id"] if wire else self.cursor
+                next_state = messages.transcript_cursor_state(
+                    self.binding.session_id, cursor, revision.lineage_ids
                 )
                 if not snapshot():
-                    raise RuntimeError(
-                        "Hermes conversation changed during the context read; rejoin Talk."
-                    )
+                    raise TranscriptReadPending("Concurrent transcript write")
+                if rotated:
+                    raise RuntimeError("Hermes conversation changed; leave and rejoin Talk.")
+                if rewritten:
+                    raise RuntimeError("Previously delivered Hermes context changed; rejoin Talk.")
+                self.revision, self.cursor, self.cursor_state = revision, cursor, next_state
                 self.replace_context = refresh
                 return [
                     {
@@ -294,7 +297,10 @@ class SubmissionRelay:
                 return []
             initial = self.tail.revision is None
             previous_cursor = self.tail.cursor
-            rows = await asyncio.to_thread(self.tail.read)
+            try:
+                rows = await asyncio.to_thread(self.tail.read)
+            except TranscriptReadPending:
+                return []
             if not rows and not self.tail.replace_context:
                 return []
             if not initial:

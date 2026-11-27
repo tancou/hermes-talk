@@ -1,10 +1,11 @@
 """Optional mirror reads against the real host's ownership and transcript repositories."""
 
 import os
+from contextlib import contextmanager
 
 import pytest
 
-from talk_delegated import Binding
+from talk_delegated import Binding, TranscriptReadPending
 from talk_discord_threads import ChildTranscript
 
 pytestmark = pytest.mark.skipif(
@@ -56,6 +57,22 @@ def test_child_transcript_is_profile_pinned_owned_incremental_and_redacted(tmp_p
         assert transcript.read() == ([], None)
         store.messages.append("child", NewMessage("assistant", "Tests passed"))
         store.sessions.end("child", "agent_close")
+        before = (transcript.session_id, transcript.cursor, transcript.cursor_state)
+        original = type(store.messages).read_snapshot
+
+        @contextmanager
+        def racing_snapshot(messages):
+            with original(messages) as check:
+                def verify():
+                    store.messages.append("other-parent", NewMessage("user", "Concurrent write"))
+                    return check()
+                yield verify
+
+        with monkeypatch.context() as patch:
+            patch.setattr(type(store.messages), "read_snapshot", racing_snapshot)
+            with pytest.raises(TranscriptReadPending):
+                transcript.read()
+            assert (transcript.session_id, transcript.cursor, transcript.cursor_state) == before
         assert transcript.read() == (["Assistant:\nTests passed"], None)
         assert transcript.read() == ([], "agent_close")
 

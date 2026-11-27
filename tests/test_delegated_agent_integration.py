@@ -88,3 +88,57 @@ def test_context_refreshes_in_place_updates_without_closing_binding(tmp_path, mo
             asyncio.run(run())
         finally:
             relay.close()
+
+
+def test_concurrent_database_write_defers_context_without_losing_rows(tmp_path, monkeypatch):
+    import asyncio
+    from contextlib import contextmanager
+
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
+
+    from talk_delegated import SubmissionRelay
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("persistence:\n  provider: sqlite\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    relay = SubmissionRelay(Binding(None, "route", "parent", home, "42", "42"), lambda *_: None)
+    with open_persistence(profile_scope(home=home)) as store:
+        for sid in ("parent", "other"):
+            store.sessions.create(NewSession(sid, source="discord"))
+        store.messages.append("parent", NewMessage("user", "Original"))
+        dirty = False
+        original = type(store.messages).read_snapshot
+
+        @contextmanager
+        def snapshot(messages):
+            with original(messages) as check:
+                def verify():
+                    if dirty:
+                        store.messages.append("other", NewMessage("assistant", "Concurrent write"))
+                    return check()
+                yield verify
+
+        monkeypatch.setattr(type(store.messages), "read_snapshot", snapshot)
+
+        async def run():
+            nonlocal dirty
+            await relay.context_commands()
+            before = (relay.tail.cursor, relay.tail.cursor_state, relay.tail.revision)
+            store.messages.append("parent", NewMessage("assistant", "Tool finished"))
+            dirty = True
+            for _ in range(3):
+                assert await relay.context_commands() == []
+                assert not relay.closed
+                assert (relay.tail.cursor, relay.tail.cursor_state, relay.tail.revision) == before
+                assert [row["content"] for row in relay.context_rows] == ["Original"]
+            dirty = False
+            assert await relay.context_commands()
+            assert [row["content"] for row in relay.context_rows] == ["Original", "Tool finished"]
+            assert await relay.context_commands() == []
+        try:
+            asyncio.run(run())
+        finally:
+            relay.close()

@@ -114,7 +114,8 @@ def launch():
 def test_thread_streams_then_ends_and_contains_no_control_handler(monkeypatch, redact):
     adapter, sent, created, _, _ = wire_transport(monkeypatch)
     transcript_sequence(monkeypatch, [
-        LookupError(), (["Assistant: Working", "Tool result: OK"], None),
+        LookupError(), threads.TranscriptReadPending(),
+        (["Assistant: Working", "Tool result: OK"], None), threads.TranscriptReadPending(),
         (["Assistant: Final result"], None), ([], "agent_close"),
     ])
 
