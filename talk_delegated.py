@@ -120,6 +120,7 @@ class ConversationTail:
         self.cursor = 0
         self.revision = None
         self.cursor_state = None
+        self.replace_context = False
 
     def read(self):
         from persistence.conversation.messages import TranscriptRead
@@ -134,20 +135,19 @@ class ConversationTail:
                     or revision.max_active_id < self.cursor
                 ):
                     raise RuntimeError("Hermes conversation changed; leave and rejoin Talk.")
-                if (
-                    self.cursor_state is not None
-                    and messages.transcript_cursor_state(
-                        self.binding.session_id, self.cursor, revision.lineage_ids
-                    )
-                    != self.cursor_state
-                ):
+                state = messages.transcript_cursor_state(
+                    self.binding.session_id, self.cursor, revision.lineage_ids
+                )
+                refresh = self.cursor_state is not None and state != self.cursor_state
+                if refresh and state[:2] != self.cursor_state[:2]:
                     raise RuntimeError("Previously delivered Hermes context changed; rejoin Talk.")
+                # Native prompt expansion also bumps the revision; replace stale context safely.
                 # Initial context is deliberately bounded; subsequent polls advance by row ID.
                 rows = messages.read_transcript(
                     self.binding.session_id,
                     (
                         TranscriptRead(latest=True, limit=16)
-                        if self.revision is None
+                        if self.revision is None or refresh
                         else TranscriptRead(after_id=self.cursor, limit=16)
                     ),
                 )
@@ -162,8 +162,10 @@ class ConversationTail:
                     raise RuntimeError(
                         "Hermes conversation changed during the context read; rejoin Talk."
                     )
+                self.replace_context = refresh
                 return [
                     {
+                        "id": row["id"],
                         "role": row.get("role"),
                         "content": str(row.get("content") or "")[:2000],
                         "display_kind": str(row.get("display_kind") or "")[:128],
@@ -291,14 +293,18 @@ class SubmissionRelay:
             if self.closed:
                 return []
             initial = self.tail.revision is None
+            previous_cursor = self.tail.cursor
             rows = await asyncio.to_thread(self.tail.read)
-            if not rows:
+            if not rows and not self.tail.replace_context:
                 return []
             if not initial:
                 self.delegation_updates.extend(
                     row for row in rows if row.get("display_kind") == "async_delegation_complete"
+                    and (not self.tail.replace_context or row["id"] > previous_cursor)
                 )
-            self.context_rows, context_text = bounded_context(self.context_rows + rows)
+            self.context_rows, context_text = bounded_context(
+                ([] if self.tail.replace_context else self.context_rows) + rows
+            )
             context_item = f"talkchat{uuid.uuid4().hex[:20]}"
             commands = [rt.RemoveContext(item_id=self.context_item)] if self.context_item else []
             commands.append(

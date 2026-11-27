@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 
 try:
     from . import talk_delegated
@@ -118,8 +119,11 @@ class HybridRelay(talk_delegated.SubmissionRelay):
                             self.thread_followups[request_id] = self.follow_delegation(
                                 self.binding, payload, call["arguments"]["tasks"][0]["goal"],
                             )
-                        except Exception:  # noqa: BLE001 - mirror failure must not repeat native work
-                            pass
+                        except Exception as exc:  # noqa: BLE001 - never repeat native work
+                            logging.getLogger(__name__).warning(
+                                "Discord delegation follow-up could not start (%s)",
+                                type(exc).__name__,
+                            )
                     receipt = {**receipt, "thread_followup": self.thread_followups[request_id]}
                 receipt = {
                     **receipt,

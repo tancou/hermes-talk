@@ -44,3 +44,47 @@ def test_context_is_bounded_profile_pinned_and_accepts_appends(tmp_path, monkeyp
         writers[0].messages.append("same-id", NewMessage("assistant", "Exact profile update"))
         assert [row["content"] for row in tails[0].read()] == ["Exact profile update"]
         assert tails[1].read() == []
+
+
+def test_context_refreshes_in_place_updates_without_closing_binding(tmp_path, monkeypatch):
+    import asyncio
+    import sqlite3
+
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
+
+    from talk_delegated import SubmissionRelay
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("persistence:\n  provider: sqlite\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    relay = SubmissionRelay(Binding(None, "route", "parent", home, "42", "42"), lambda *_: None)
+    with open_persistence(profile_scope(home=home)) as store:
+        store.sessions.create(NewSession("parent", source="discord"))
+        store.messages.append("parent", NewMessage("user", "Original"))
+
+        async def run():
+            await relay.context_commands()
+            store.messages.append("parent", NewMessage("user", "New request"))
+            # Native turns expand API context in place, also advancing the global revision.
+            with sqlite3.connect(home / "state.db") as db:
+                db.execute("UPDATE messages SET api_content = ? WHERE content = ?",
+                           ("Expanded context", "New request"))
+            await relay.context_commands()
+            assert [row["content"] for row in relay.context_rows] == ["Original", "New request"]
+            with sqlite3.connect(home / "state.db") as db:
+                db.execute("UPDATE messages SET content = ? WHERE content = ?",
+                           ("Corrected", "Original"))
+            await relay.context_commands()
+            assert [row["content"] for row in relay.context_rows] == ["Corrected", "New request"]
+            assert not relay.closed
+            with sqlite3.connect(home / "state.db") as db:
+                db.execute("UPDATE messages SET active = 0 WHERE content = ?", ("Corrected",))
+            with pytest.raises(RuntimeError, match="context changed"):
+                await relay.context_commands()
+        try:
+            asyncio.run(run())
+        finally:
+            relay.close()

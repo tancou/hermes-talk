@@ -1966,7 +1966,9 @@ async def run_talk_session(
                 )):
                     try:
                         context = await delegated_relay.context_commands()
-                    except Exception:  # noqa: BLE001 - close binding on storage failure
+                    except Exception as exc:  # noqa: BLE001 - close binding on storage failure
+                        _log.warning("Hermes voice context synchronization stopped (%s)",
+                                     type(exc).__name__)
                         delegated_relay.close()
                         context = [talk_realtime.AddContext(
                             item_id=f"talkclosed{uuid.uuid4().hex[:20]}",
