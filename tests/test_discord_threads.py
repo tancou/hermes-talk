@@ -319,3 +319,46 @@ def test_transcript_requires_owned_child_and_stops_on_rotation(monkeypatch, reda
     owned_id[0] = "unrelated-or-rotated"
     with pytest.raises(RuntimeError, match="rotated"):
         transcript.read()
+
+
+def test_terminal_result_is_decoded_with_status_and_no_empty_error(redact):
+    text = threads._render(row(role="tool", tool_name="terminal", content=json.dumps({
+        "output": "commit abc\n1 file changed\nbranch\tmain", "exit_code": 0, "error": None,
+    })))
+    assert "Tool result — terminal" in text and "Exit code:" in text
+    assert "commit abc\n1 file changed\nbranch\tmain" in text
+    assert "\\n" not in text and "Error:" not in text
+    assert "```text" in text
+
+
+def test_calls_decode_arguments_and_keep_additional_fields(redact):
+    item = row(content=None)
+    item.tool_calls = [{"function": {"name": "terminal", "arguments": json.dumps({
+        "command": "git status\ngit diff", "workdir": "/project", "timeout": 180,
+    })}}]
+    text = threads._render(item)
+    assert "```bash\ngit status\ngit diff\n```" in text
+    assert "/project" in text and '"timeout": 180' in text
+
+
+def test_diff_truncation_closes_fence_and_preserves_error(redact):
+    text = threads._render(row(role="tool", content=json.dumps({
+        "diff": "-old\n+new\n```\nprivate-token @everyone\n" + "x" * 3000,
+        "success": False, "error": "Patch failed",
+    })))
+    assert "Patch failed" in text and "false" in text
+    assert "```diff" in text and "\n```\n[abridged" in text
+    assert "private-token" not in text and "@everyone" not in text
+    assert len(text) <= 1700
+    suffix = "\n```\n[abridged — full transcript remains in Hermes]"
+    assert threads._safe_text(text).endswith(suffix)
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ('{"unknown": [1, 2]}', '```json\n{\n  "unknown": ['),
+    ('not json\\nkeep literal', 'not json\\nkeep literal'),
+    ('{"content": "line one\\nline two", "truncated": true}', 'line one\nline two'),
+])
+def test_unknown_and_file_outputs_remain_readable(payload, expected, redact):
+    text = threads._render(row(role="tool", content=payload))
+    assert expected in text

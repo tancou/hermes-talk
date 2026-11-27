@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 
 try:
@@ -25,7 +26,10 @@ def _safe_text(text: str, limit: int = 1700) -> str:
     text = redact_child_text(text, force=True).replace("@", "@\u200b")
     if len(text) > limit:
         suffix = "\n[abridged — full transcript remains in Hermes]"
-        text = text[:limit - len(suffix)] + suffix
+        text = text[:limit - len(suffix) - 4]
+        if len(re.findall(r"^```", text, re.MULTILINE)) % 2:
+            text += "\n```"
+        text += suffix
     return text
 
 
@@ -41,20 +45,64 @@ def _content(value) -> str:
     return ""
 
 
+def _block(text, language="text"):
+    # Tool output must not close its fence and become Discord markup.
+    return f"```{language}\n" + text.replace("```", "``\u200b`") + "\n```"
+
+
+def _structured(value):
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return _block(value)
+    if not isinstance(value, dict):
+        return _block(json.dumps(value, ensure_ascii=False, indent=2), "json")
+    remaining = dict(value)
+    parts = []
+    # Status and errors precede long output so truncation cannot hide a failure.
+    for key, label in (("exit_code", "Exit code"), ("success", "Success"), ("error", "Error")):
+        if key in remaining:
+            item = remaining.pop(key)
+            if item is not None:
+                if type(item) in (int, float, bool):
+                    parts.append(f"{label}: " + json.dumps(item))
+                else:
+                    parts.append(f"{label}:\n" + _block(json.dumps(item, ensure_ascii=False)
+                                                      if not isinstance(item, str) else item))
+    for key, label in (("workdir", "Directory"), ("path", "Path")):
+        if isinstance(remaining.get(key), str):
+            parts.append(label + ":\n" + _block(remaining.pop(key)))
+    bodies = []
+    for key, language in (("command", "bash"), ("output", "text"), ("content", "text"),
+                          ("diff", "diff"), ("patch", "diff")):
+        if isinstance(remaining.get(key), str):
+            body = remaining.pop(key)
+            if body:
+                bodies.append(key.capitalize() + ":\n" + _block(body, language))
+    if remaining:
+        parts.append(_block(json.dumps(remaining, ensure_ascii=False, indent=2), "json"))
+    return "\n\n".join(parts + bodies) or _block("{}", "json")
+
+
 def _render(row) -> str:
     # System prompts, injected user context and reasoning sidecars are not a public transcript.
     if row.role not in {"assistant", "tool"} or row.compressed_summary:
         return ""
     parts = []
     if text := _content(row.content):
-        parts.append(("Assistant" if row.role == "assistant" else "Tool result") + ":\n" + text)
+        if row.role == "assistant":
+            parts.append("Assistant:\n" + text)
+        else:
+            name = getattr(row, "tool_name", None)
+            parts.append("Tool result" + (" — " + str(name) if name else "")
+                         + ":\n" + _structured(text))
     if row.role == "assistant" and isinstance(row.tool_calls, list):
         for call in row.tool_calls:
             function = call.get("function") if isinstance(call, dict) else None
             if isinstance(function, dict):
-                parts.append("Tool call:\n" + json.dumps(
-                    {key: function.get(key) for key in ("name", "arguments")}, ensure_ascii=False,
-                ))
+                parts.append("Tool call — " + str(function.get("name") or "unknown")
+                             + ":\n" + _structured(function.get("arguments")))
     return _safe_text("\n\n".join(parts)) if parts else ""
 
 
